@@ -2,7 +2,7 @@ package com.malrota.service;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.malrota.client.PythonNluClient;
+import com.malrota.client.TerminalRegistry;
 import com.malrota.client.WatsonxClient;
 import com.malrota.domain.ConversationSession;
 import com.malrota.dto.request.ConversationParseRequest;
@@ -10,7 +10,6 @@ import com.malrota.dto.response.ConversationParseResponse;
 import com.malrota.service.nlu.ConversationRuleExtractor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import com.malrota.client.PythonNluClient;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -23,14 +22,16 @@ public class ConversationParseService {
 
     private final WatsonxClient watsonxClient;
     private final ConversationRuleExtractor ruleExtractor;
-    private final PythonNluClient pythonNluClient;
+    private final TerminalRegistry terminalRegistry;
     private final ObjectMapper objectMapper = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
-    public ConversationParseService(WatsonxClient watsonxClient, ConversationRuleExtractor ruleExtractor, PythonNluClient pythonNluClient) {
+    public ConversationParseService(WatsonxClient watsonxClient,
+                                    ConversationRuleExtractor ruleExtractor,
+                                    TerminalRegistry terminalRegistry) {
         this.watsonxClient = watsonxClient;
         this.ruleExtractor = ruleExtractor;
-        this.pythonNluClient = pythonNluClient;
+        this.terminalRegistry = terminalRegistry;
     }
 
     public ConversationParseResponse parse(ConversationParseRequest request) {
@@ -38,15 +39,7 @@ public class ConversationParseService {
     }
 
     public ConversationParseResponse parse(ConversationParseRequest request, ConversationSession session) {
-        // 1. 파이썬 NLU 서버 호출 (우선)
-        ConversationParseResponse pythonResult = pythonNluClient.parse(request.text(), session);
-        if (pythonResult != null) {
-            log.info("[ConversationParseService] 파이썬 NLU 결과 사용");
-            return pythonResult;
-        }
-
-        // 2. 파이썬 실패 시 기존 방식 (룰베이스 + watsonx)
-        log.warn("[ConversationParseService] 파이썬 NLU 실패, 기존 방식으로 대체");
+        // Spring Boot 내부 규칙과 watsonx만 사용한다. 별도 Python 서버는 필요하지 않다.
         LocalDateTime now = LocalDateTime.now();
         String isoDateTime = now.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "+09:00";
 
@@ -63,22 +56,35 @@ public class ConversationParseService {
             }
         }
 
-        return normalize(llmResult, rules, session);
+        return normalize(llmResult, rules, session, request.text());
     }
 
     private ConversationParseResponse normalize(ConversationParseResponse llm,
                                                 ConversationRuleExtractor.RuleParse rules,
-                                                ConversationSession session) {
+                                                ConversationSession session,
+                                                String rawText) {
         String intent = firstNonBlank(rules.intent(), value(llm, ConversationParseResponse::intent), "BUS_SEARCH");
         String departure = firstNonBlank(rules.departure(), value(llm, ConversationParseResponse::departure), sessionValue(session, ConversationSession::getDeparture));
         String arrival = firstNonBlank(rules.arrival(), value(llm, ConversationParseResponse::arrival), sessionValue(session, ConversationSession::getArrival));
+
+        // "강남", "사상"처럼 세부 터미널명만 후속으로 말한 경우에는
+        // 직전에 수집한 복수 터미널 도시의 출발지 또는 도착지를 확정한다.
+        String standaloneTerminal = resolveStandaloneTerminal(rawText);
+        if (standaloneTerminal != null && session != null) {
+            if (terminalRegistry.isMultiTerminalCity(session.getDeparture())) {
+                departure = standaloneTerminal;
+            } else if (terminalRegistry.isMultiTerminalCity(session.getArrival())) {
+                arrival = standaloneTerminal;
+            }
+        }
         String date = firstNonBlank(rules.date() == null ? null : rules.date().toString(), value(llm, ConversationParseResponse::date), sessionValue(session, ConversationSession::getDate));
         String departureTime = firstNonBlank(rules.departureTime() == null ? null : rules.departureTime().toString(), value(llm, ConversationParseResponse::departureTime), sessionValue(session, ConversationSession::getDepartureTime));
         String timePreference = firstNonBlank(rules.timePreference(), value(llm, ConversationParseResponse::timePreference), sessionValue(session, ConversationSession::getTimePreference), "ANY");
         String servicePreference = firstNonBlank(rules.servicePreference(), value(llm, ConversationParseResponse::servicePreference), sessionValue(session, ConversationSession::getServicePreference), "ANY");
         String busGradePreference = firstNonBlank(rules.busGradePreference(), value(llm, ConversationParseResponse::busGradePreference), sessionValue(session, ConversationSession::getBusGradePreference), "ANY");
         
-        int passengers = rules.passengers() > 1 ? rules.passengers()
+        boolean passengerMentioned = rules.passengerMentioned() || hasPassengerMention(rawText);
+        int passengers = rules.passengerMentioned() ? rules.passengers()
                 : llm != null && llm.passengers() > 1 ? llm.passengers()
                 : session != null && session.getPassengers() > 1 ? session.getPassengers() : 1;
 
@@ -87,16 +93,41 @@ public class ConversationParseService {
         List<String> accessibilityNeeds = mergePreferences(session == null ? List.of() : session.getAccessibilityNeeds(),
                 llm == null ? null : llm.accessibilityNeeds(), rules.accessibilityNeeds(), rules.accessibilityMentioned());
 
-        List<String> missing = missingRequired(departure, arrival, date, departureTime, timePreference);
+        boolean passengerConfirmed = passengerMentioned || (session != null && session.isPassengerCountConfirmed());
+        List<String> missing = missingRequired(departure, arrival, date, departureTime, passengerConfirmed);
         
         // ⭐ 깔끔하게 정리된 반문 생성 호출
-        String prompt = clarificationPrompt(missing, departure, arrival, seatPreferences, accessibilityNeeds);
+        String prompt = missing.isEmpty() ? terminalClarification(departure, arrival) : null;
+        if (prompt == null) {
+            prompt = clarificationPrompt(missing, departure, arrival, seatPreferences, accessibilityNeeds);
+        }
 
         return new ConversationParseResponse(
                 intent, nullIfBlank(departure), nullIfBlank(arrival), nullIfBlank(date),
-                nullIfBlank(departureTime), timePreference, servicePreference, busGradePreference, passengers,
+                nullIfBlank(departureTime), timePreference, servicePreference, busGradePreference, passengers, passengerMentioned,
                 seatPreferences, accessibilityNeeds, missing, prompt
         );
+    }
+
+    private String resolveStandaloneTerminal(String rawText) {
+        if (rawText == null) return null;
+        String input = rawText.trim().replaceAll("\\s+", "");
+        if (input.isBlank() || input.length() > 12 || input.contains("에서") || input.contains("행")) return null;
+
+        String canonical = terminalRegistry.getCanonicalName(input);
+        return canonical.equals(input) ? null : canonical;
+    }
+
+    private String terminalClarification(String departure, String arrival) {
+        if (terminalRegistry.isMultiTerminalCity(departure)) {
+            return departure + "에는 " + String.join(", ", terminalRegistry.getTerminalNames(departure))
+                    + " 터미널이 있어요. 어느 터미널에서 출발하시나요?";
+        }
+        if (terminalRegistry.isMultiTerminalCity(arrival)) {
+            return arrival + "에는 " + String.join(", ", terminalRegistry.getTerminalNames(arrival))
+                    + " 터미널이 있어요. 어느 터미널로 가시나요?";
+        }
+        return null;
     }
 
     private List<String> mergePreferences(List<String> existing, List<String> llmValues, List<String> ruleValues, boolean explicitlyMentioned) {
@@ -115,14 +146,15 @@ public class ConversationParseService {
         if (values != null) values.stream().filter(v -> v != null && !v.isBlank() && !"null".equalsIgnoreCase(v)).forEach(target::add);
     }
 
-    private List<String> missingRequired(String departure, String arrival, String date, String depTime, String timePref) {
+    private List<String> missingRequired(String departure, String arrival, String date, String departureTime,
+                                         boolean passengerConfirmed) {
         List<String> missing = new ArrayList<>();
         if (isBlank(departure)) missing.add("departure");
         if (isBlank(arrival)) missing.add("arrival");
         if (isBlank(date)) missing.add("date");
-        if (isBlank(depTime) && (isBlank(timePref) || "ANY".equalsIgnoreCase(timePref))) {
-            missing.add("timePreference");
-        }
+        // 오전·오후 같은 시간대만으로는 실제 운행편을 특정할 수 없으므로, 정확한 시각을 필수로 받는다.
+        if (isBlank(departureTime)) missing.add("departureTime");
+        if (!passengerConfirmed) missing.add("passengers");
         return missing;
     }
 
@@ -139,14 +171,17 @@ public class ConversationParseService {
             if (missing.contains("arrival")) {
                 return (departure != null && !departure.isBlank() ? departure + "에서 " : "") + "어디로 가시나요?";
             }
-            if (missing.contains("date") && missing.contains("timePreference")) {
-                return "언제 출발하시나요? '내일 아침', '이번 주말 오후'처럼 날짜와 시간대를 편하게 말씀해 주세요.";
+            if (missing.contains("date") && missing.contains("departureTime")) {
+                return "언제 출발하시나요? 날짜와 함께 '오전 9시', '오후 3시'처럼 정확한 출발 시각을 말씀해 주세요.";
             }
             if (missing.contains("date")) {
                 return "출발하시는 날짜를 말씀해 주세요. '오늘', '내일', '이번 주 토요일'처럼 말씀하셔도 됩니다.";
             }
-            if (missing.contains("timePreference")) {
-                return "몇 시쯤 출발하는 버스를 원하시나요? '오전 9시', '오후 3시', '첫차', '막차'처럼 말씀해 주세요.";
+            if (missing.contains("departureTime")) {
+                return "정확히 몇 시에 출발하시나요? '오전 9시', '오후 3시 30분'처럼 시각을 말씀해 주세요.";
+            }
+            if (missing.contains("passengers")) {
+                return "몇 분이 함께 이용하시나요? 혼자면 '혼자', 함께라면 '두 명'처럼 말씀해 주세요.";
             }
         }
 
@@ -159,6 +194,11 @@ public class ConversationParseService {
         }
 
         return null;
+    }
+
+    private boolean hasPassengerMention(String rawText) {
+        if (rawText == null) return false;
+        return rawText.matches(".*(혼자|[한두세네다섯여섯0-9]+\\s*(명|장|인|자리|좌석|표|사람|분|식구)|둘이|부부).*" );
     }
 
     private String buildPrompt(String text, String isoDateTime, ConversationSession session) {

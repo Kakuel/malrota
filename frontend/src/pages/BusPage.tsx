@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { parseConversation, recommendBuses } from '../api/conversationApi'
 import { recommendSeat } from '../api/seatApi'
 import { useAppState } from '../features/conversation/AppState'
 import { VoicePanel, speak } from '../features/conversation/VoicePanel'
@@ -15,7 +16,11 @@ function formatTime(raw: string): string {
 }
 
 export function BusPage() {
-  const { recommendations, setSelectedBus, setSeat, setScreen, addMessage, seatPreferences, accessibilityNeeds } = useAppState()
+  const {
+    recommendations, setRecommendations, setSelectedBus, setSeat, setScreen, addMessage,
+    seatPreferences, setSeatPreferences, accessibilityNeeds, setAccessibilityNeeds,
+    sessionId, setSessionId, setConditions, conditions,
+  } = useAppState()
   const [loading, setLoading] = useState(false)
   const announced = useRef(false)
 
@@ -30,7 +35,7 @@ export function BusPage() {
       announced.current = true
       const text = recommendations
         .map((r) => `${r.reason} ${formatTime(r.bus.departureTime)} 출발, ${r.bus.charge.toLocaleString()}원.`)
-        .join(' ')
+        .join('\n')
       appSay('추천 버스를 안내해드릴게요. ' + text + ' 어떤 버스로 하시겠어요?')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -44,6 +49,7 @@ export function BusPage() {
         seatPreferences: seatPreferences as any,
         accessibilityNeeds: accessibilityNeeds as any,
         busGrade: bus.grade,
+        passengers: conditions?.passengers ?? 1,
       })
       setSeat(seatData)
       appSay(`${formatTime(bus.departureTime)} 출발 버스를 선택했어요. 추천 좌석은 ${seatData.bestSeat?.seatNo ?? ''}번입니다. 이 좌석으로 결제할까요?`)
@@ -55,25 +61,65 @@ export function BusPage() {
     }
   }
 
-  // 음성으로 버스 고르기
-  function handleUserSpeak(text: string) {
-    addMessage('user', text)
-    if (recommendations.length === 0) return
-
+  function chosenBusFromSpeech(text: string, options = recommendations) {
+    if (options.length === 0) return null
     if (text.includes('저렴') || text.includes('싼') || text.includes('싸')) {
-      const found = recommendations.find((r) => r.label.includes('최저가'))
-      chooseBus((found ?? recommendations[0]).bus)
-    } else if (text.includes('빠른') || text.includes('이른') || text.includes('첫') || text.includes('추천')) {
-      const found = recommendations.find((r) => r.label.includes('추천'))
-      chooseBus((found ?? recommendations[0]).bus)
-    } else if (text.includes('두') || text.includes('2')) {
-      chooseBus((recommendations[1] ?? recommendations[0]).bus)
-    } else if (text.includes('세') || text.includes('3')) {
-      chooseBus((recommendations[2] ?? recommendations[0]).bus)
-    } else if (text.includes('첫') || text.includes('1')) {
-      chooseBus(recommendations[0].bus)
-    } else {
-      appSay('저렴한 것, 추천 시간, 또는 몇 번째인지 말씀해 주세요.')
+      return (options.find((r) => r.label.includes('최저가')) ?? options[0]).bus
+    }
+    if (text.includes('빠른') || text.includes('이른') || text.includes('첫') || text.includes('추천')) {
+      return (options.find((r) => r.label.includes('추천')) ?? options[0]).bus
+    }
+    if (text.includes('두') || text.includes('2')) return (options[1] ?? options[0]).bus
+    if (text.includes('세') || text.includes('3')) return (options[2] ?? options[0]).bus
+    if (text.includes('첫') || text.includes('1')) return options[0].bus
+    return null
+  }
+
+  // 음성 발화를 먼저 LLM/규칙 파서에 전달하고, 변경된 조건으로 추천을 다시 계산한다.
+  async function handleUserSpeak(text: string) {
+    addMessage('user', text)
+    setLoading(true)
+    try {
+      const session = await parseConversation(text, sessionId)
+      setSessionId(session.sessionId)
+      setConditions(session)
+      setSeatPreferences(session.seatPreferences ?? [])
+      setAccessibilityNeeds(session.accessibilityNeeds ?? [])
+
+      if (session.intent === 'CANCEL') {
+        appSay('버스 선택을 취소하고 처음 화면으로 돌아갈게요.')
+        setScreen('home')
+        return
+      }
+
+      if (!session.departure || !session.arrival || !session.date) {
+        appSay(session.clarificationPrompt ?? '출발지, 도착지, 날짜를 다시 말씀해 주세요.')
+        return
+      }
+
+      const nextRecommendations = await recommendBuses({
+        departure: session.departure,
+        arrival: session.arrival,
+        date: session.date,
+        departureTime: session.departureTime,
+        timePreference: session.timePreference,
+        servicePreference: session.servicePreference,
+        busGradePreference: session.busGradePreference,
+      })
+      setRecommendations(nextRecommendations)
+
+      const selected = chosenBusFromSpeech(text, nextRecommendations)
+      if (selected) {
+        await chooseBus(selected)
+      } else if (nextRecommendations.length === 0) {
+        appSay('바뀐 조건에 맞는 버스를 찾지 못했습니다. 다른 시간이나 등급을 말씀해 주세요.')
+      } else {
+        appSay('말씀하신 조건을 반영했습니다. 저렴한 것, 추천 시간, 또는 몇 번째 버스인지 말씀해 주세요.')
+      }
+    } catch {
+      appSay('조건을 반영하지 못했습니다. 서버 상태를 확인해 주세요.')
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -102,9 +148,9 @@ export function BusPage() {
                 textAlign: 'left',
                 background: '#fff',
                 border: '2px solid #f0e6d8',
-                borderRadius: '16px',
-                padding: '18px',
-                marginBottom: '12px',
+              borderRadius: '14px',
+              padding: '14px',
+              marginBottom: '8px',
                 cursor: 'pointer',
                 position: 'relative',
               }}
@@ -118,24 +164,24 @@ export function BusPage() {
                 fontWeight: 700,
                 padding: '4px 12px',
                 borderRadius: '999px',
-                marginBottom: '8px',
+                marginBottom: '5px',
               }}>
                 {rec.label}
               </span>
-              <div style={{ fontSize: '1.2rem', fontWeight: 800, color: '#2b2320' }}>
+              <div style={{ fontSize: '1.08rem', fontWeight: 800, color: '#2b2320' }}>
                 {rec.bus.departure} → {rec.bus.arrival}
               </div>
-              <div style={{ fontSize: '1.1rem', color: '#f07f21', marginTop: '6px' }}>
+              <div style={{ fontSize: '1rem', color: '#f07f21', marginTop: '4px' }}>
                 {formatTime(rec.bus.departureTime)} 출발 · {formatTime(rec.bus.arrivalTime)} 도착
               </div>
-              <div style={{ fontSize: '1rem', color: '#58665f', marginTop: '4px' }}>
+              <div style={{ fontSize: '0.9rem', color: '#58665f', marginTop: '3px' }}>
                 {rec.bus.grade} · {rec.bus.charge.toLocaleString()}원
               </div>
             </button>
           ))
         )}
 
-        <VoicePanel onUserSpeak={handleUserSpeak} loading={loading} />
+        <VoicePanel onUserSpeak={handleUserSpeak} loading={loading} compact />
       </div>
     </div>
   )

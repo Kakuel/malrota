@@ -2,6 +2,7 @@ package com.malrota.service;
 
 import com.malrota.domain.ConversationSession;
 import com.malrota.domain.ConversationState;
+import com.malrota.client.TerminalRegistry;
 import org.springframework.stereotype.Service;
 
 import java.util.Map;
@@ -15,6 +16,11 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ConversationSessionService {
 
     private final Map<String, ConversationSession> sessions = new ConcurrentHashMap<>();
+    private final TerminalRegistry terminalRegistry;
+
+    public ConversationSessionService(TerminalRegistry terminalRegistry) {
+        this.terminalRegistry = terminalRegistry;
+    }
 
     /** 세션 조회, 없으면 새로 생성 */
     public ConversationSession getOrCreate(String sessionId) {
@@ -28,7 +34,10 @@ public class ConversationSessionService {
     public void refreshAfterParse(ConversationSession session) {
         session.resetConfirmationIfNeeded();
 
-        if (session.hasAllRequiredFields()) {
+        boolean terminalNeedsSelection = terminalRegistry.isMultiTerminalCity(session.getDeparture())
+                || terminalRegistry.isMultiTerminalCity(session.getArrival());
+
+        if (session.hasAllRequiredFields() && !terminalNeedsSelection) {
             if (session.getState() == ConversationState.COLLECTING_CONDITIONS) {
                 session.setState(ConversationState.READY_TO_SEARCH);
             }

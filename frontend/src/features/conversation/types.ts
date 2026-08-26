@@ -63,6 +63,7 @@ export type ConversationStateValue =
 export interface ConversationSessionResult {
   sessionId: string
   state: ConversationStateValue
+  intent: 'BUS_SEARCH' | 'CANCEL' | 'INQUIRY'
   departure: string | null
   arrival: string | null
   date: string | null

@@ -53,22 +53,44 @@ public class BusSearchService {
         BusSchedule best = schedules.get(0);
         result.add(new BusRecommendation(best, "말씀하신 시간과 가장 가까운 버스입니다.", "추천 시간"));
 
-        // 2. 가장 저렴한 버스
-        BusSchedule cheapest = schedules.stream()
+        // 2. 사용자가 특정 시각을 말했으면, 그 시각 이전 3시간 안에서만 최저가를 고른다.
+        //    예: 21:00 요청 -> 18:00~21:00 출발편 중 최저가. 너무 이른 버스를 "최저가"로
+        //    추천해 사용자의 출발 의도와 어긋나는 것을 막는다.
+        List<BusSchedule> cheapestCandidates = cheapestCandidates(schedules, request);
+        BusSchedule cheapest = cheapestCandidates.stream()
                 .min(Comparator.comparingInt(BusSchedule::charge))
-                .orElse(best);
-        if (!isSameBus(cheapest, best)) {
-            result.add(new BusRecommendation(cheapest, "가장 저렴한 버스입니다.", "최저가"));
+                .orElse(null);
+        if (cheapest != null && !isSameBus(cheapest, best)) {
+            String reason = hasText(request.departureTime())
+                    ? "요청하신 시각 이전 3시간 안에서 가장 저렴한 버스입니다."
+                    : "가장 저렴한 버스입니다.";
+            result.add(new BusRecommendation(cheapest, reason, "최저가"));
         }
 
         // 3. 근처 시각 (1,2와 겹치지 않는 다음 버스)
         for (BusSchedule s : schedules) {
-            if (!isSameBus(s, best) && !isSameBus(s, cheapest)) {
+            if (!isSameBus(s, best) && (cheapest == null || !isSameBus(s, cheapest))) {
                 result.add(new BusRecommendation(s, "비슷한 시간대의 다른 버스입니다.", "다른 시간"));
                 break;
             }
         }
         return result;
+    }
+
+    private List<BusSchedule> cheapestCandidates(List<BusSchedule> schedules, BusSearchRequest request) {
+        if (!hasText(request.departureTime())) return schedules;
+
+        LocalTime requested = parseTime(request.departureTime());
+        if (requested == null) return schedules;
+
+        // 조회는 하루 단위이므로 자정을 넘는 이전 날짜 운행편까지는 포함하지 않는다.
+        LocalTime start = requested.getHour() < 3 ? LocalTime.MIDNIGHT : requested.minusHours(3);
+        return schedules.stream()
+                .filter(schedule -> {
+                    LocalTime departure = departureTime(schedule);
+                    return !departure.isBefore(start) && !departure.isAfter(requested);
+                })
+                .toList();
     }
 
     private boolean isSameBus(BusSchedule a, BusSchedule b) {

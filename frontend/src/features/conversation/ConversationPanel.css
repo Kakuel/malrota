@@ -2,11 +2,17 @@
 .chat-container {
   background: #fdf6ee;
   border-radius: 20px;
-  padding: 20px 16px;
+  padding: 16px 14px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  min-height: 200px;
+  gap: 10px;
+  min-height: 170px;
+}
+
+.chat-container.compact {
+  min-height: 0;
+  padding: 10px 12px;
+  gap: 8px;
 }
 
 /* 말풍선 한 줄 */
@@ -30,11 +36,12 @@
 /* 말풍선 */
 .chat-bubble {
   max-width: 75%;
-  padding: 12px 16px;
+  padding: 10px 14px;
   border-radius: 16px;
-  font-size: 1.05rem;
+  font-size: 1rem;
   line-height: 1.5;
   font-weight: 500;
+  white-space: pre-line;
 }
 
 .chat-bubble.app {
@@ -54,14 +61,14 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
-  margin-top: 24px;
+  gap: 8px;
+  margin-top: 14px;
 }
 
 /* 큰 마이크 버튼 */
 .mic-button {
-  width: 96px;
-  height: 96px;
+  width: 80px;
+  height: 80px;
   border-radius: 50%;
   border: none;
   background: #f57f20;
@@ -84,7 +91,7 @@
 }
 
 .mic-label {
-  font-size: 1.1rem;
+  font-size: 1rem;
   font-weight: 700;
   color: #2b2320;
 }
@@ -113,9 +120,9 @@
 }
 
 .send-button {
-  margin-top: 10px;
+  margin-top: 8px;
   width: 100%;
-  padding: 14px;
+  padding: 12px;
   border: none;
   border-radius: 14px;
   background: #f57f20;
@@ -128,4 +135,35 @@
 .send-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.chat-container.compact .chat-avatar {
+  width: 26px;
+  height: 26px;
+}
+
+.chat-container.compact .chat-bubble {
+  max-width: 86%;
+  padding: 8px 10px;
+  font-size: 0.92rem;
+  line-height: 1.35;
+}
+
+.chat-container.compact .mic-area {
+  margin-top: 4px;
+  gap: 5px;
+}
+
+.chat-container.compact .mic-button {
+  width: 64px;
+  height: 64px;
+  box-shadow: 0 5px 14px rgb(245 127 32 / 28%);
+}
+
+.chat-container.compact .mic-label {
+  font-size: 0.9rem;
+}
+
+.chat-container.compact .mic-sublabel {
+  font-size: 0.82rem;
 }

@@ -21,6 +21,9 @@ public class ConversationSession {
     @Builder.Default
     private ConversationState state = ConversationState.COLLECTING_CONDITIONS;
 
+    @Builder.Default
+    private String intent = "BUS_SEARCH";
+
     // 예매 조건
     private String departure;
     private String arrival;
@@ -31,6 +34,8 @@ public class ConversationSession {
     private String busGradePreference;
     @Builder.Default
     private int passengers = 1;
+    @Builder.Default
+    private boolean passengerCountConfirmed = false;
 
     private String clarificationPrompt;
 
@@ -49,6 +54,7 @@ public class ConversationSession {
     public ConversationSession(String sessionId) {
         this.sessionId = sessionId;
         this.state = ConversationState.COLLECTING_CONDITIONS;
+        this.intent = "BUS_SEARCH";
         this.seatPreferences = new ArrayList<>();
         this.accessibilityNeeds = new ArrayList<>();
     }
@@ -57,7 +63,9 @@ public class ConversationSession {
     public boolean hasAllRequiredFields() {
         return departure != null && !departure.isBlank()
                 && arrival != null && !arrival.isBlank()
-                && date != null && !date.isBlank();
+                && date != null && !date.isBlank()
+                && departureTime != null && !departureTime.isBlank()
+                && passengerCountConfirmed;
     }
 
     /** 조건이 바뀌었을 때 확인 상태를 초기화 */
@@ -71,7 +79,8 @@ public class ConversationSession {
     /** 새로 추출된 조건 병합. 파서가 세션의 기존 값을 반영한 완성 상태를 전달한다. */
     public void mergeConditions(String departure, String arrival, String date, String departureTime,
                                 String timePreference, String servicePreference, String busGradePreference,
-                                int passengers, List<String> seatPrefs, List<String> accessNeeds,
+                                int passengers, boolean passengerMentioned,
+                                List<String> seatPrefs, List<String> accessNeeds,
                                 String clarificationPrompt) {
         if (departure != null && !departure.isBlank()) this.departure = departure;
         if (arrival != null && !arrival.isBlank()) this.arrival = arrival;
@@ -81,6 +90,7 @@ public class ConversationSession {
         if (servicePreference != null && !servicePreference.isBlank()) this.servicePreference = servicePreference;
         if (busGradePreference != null && !busGradePreference.isBlank()) this.busGradePreference = busGradePreference;
         if (passengers > 0) this.passengers = passengers;
+        if (passengerMentioned) this.passengerCountConfirmed = true;
 
         if (seatPrefs != null) {
             this.seatPreferences = new ArrayList<>(seatPrefs);

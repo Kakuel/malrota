@@ -25,6 +25,14 @@ public class SeatRecommendService {
                 ? request.accessibilityNeeds() : List.of();
         List<String> prefs = request.seatPreferences() != null
                 ? request.seatPreferences() : List.of();
+        boolean hasExplicitPosition = prefs.stream()
+                .anyMatch(preference -> List.of("FRONT", "MIDDLE", "BACK").contains(preference));
+        boolean allowsFrontAccessibilityBoost = !hasExplicitPosition || prefs.contains("FRONT");
+
+        if (request.passengers() == 2) {
+            SeatRecommendation pairRecommendation = recommendAdjacentPair(seats, prefs, access, allowsFrontAccessibilityBoost);
+            if (pairRecommendation != null) return pairRecommendation;
+        }
 
         int bestScore = -1;
         List<Seat> bestSeats = new ArrayList<>();   // 최고 점수 좌석들 (동률 포함)
@@ -62,7 +70,8 @@ public class SeatRecommendService {
             }
 
             // 교통약자·안전 관련 조건
-            if (access.contains("WALKING_DIFFICULTY") && seat.position().equals("FRONT")) {
+            // 사용자가 앞·중간·뒤 위치를 직접 정했다면, 자동 접근성 규칙이 반대 위치를 이기지 않게 한다.
+            if (access.contains("WALKING_DIFFICULTY") && allowsFrontAccessibilityBoost && seat.position().equals("FRONT")) {
                 score += 5;
                 reasons.add("다리가 불편하셔서 타고 내리기 쉬운 앞쪽 좌석입니다.");
             }
@@ -70,11 +79,11 @@ public class SeatRecommendService {
                 score += 3;
                 reasons.add("이동이 편한 통로 쪽 좌석입니다.");
             }
-            if (access.contains("MOTION_SICKNESS") && seat.position().equals("FRONT")) {
+            if (access.contains("MOTION_SICKNESS") && allowsFrontAccessibilityBoost && seat.position().equals("FRONT")) {
                 score += 4;
                 reasons.add("멀미가 있으셔서 흔들림이 적은 앞쪽 좌석입니다.");
             }
-            if (access.contains("ELDERLY_CARE") && seat.position().equals("FRONT")) {
+            if (access.contains("ELDERLY_CARE") && allowsFrontAccessibilityBoost && seat.position().equals("FRONT")) {
                 score += 4;
                 reasons.add("어르신이 이용하기 편하도록 앞쪽 좌석을 우선합니다.");
             }
@@ -106,5 +115,53 @@ public class SeatRecommendService {
         }
 
         return new SeatRecommendation(bestSeat, bestScore, bestReasons, alternatives, seats);
+    }
+
+    private SeatRecommendation recommendAdjacentPair(List<Seat> seats, List<String> prefs, List<String> access,
+                                                      boolean allowsFrontAccessibilityBoost) {
+        int bestScore = -1;
+        Seat first = null;
+        Seat second = null;
+
+        for (Seat left : seats) {
+            if (!left.available()) continue;
+            for (Seat right : seats) {
+                if (!right.available() || left.row() != right.row() || right.column() != left.column() + 1) continue;
+
+                int pairScore = scoreForPair(left, prefs, access, allowsFrontAccessibilityBoost)
+                        + scoreForPair(right, prefs, access, allowsFrontAccessibilityBoost);
+                if (pairScore > bestScore) {
+                    bestScore = pairScore;
+                    first = left;
+                    second = right;
+                }
+            }
+        }
+
+        if (first == null || second == null) return null;
+
+        Seat pairSeat = new Seat(first.seatNo() + ", " + second.seatNo(), first.row(), first.column(),
+                first.position(), first.side(), true);
+        List<String> reasons = new ArrayList<>();
+        reasons.add("두 분이 함께 앉을 수 있도록 붙어 있는 좌석입니다.");
+        if (prefs.contains("BACK") && first.position().equals("BACK")) {
+            reasons.add("뒷좌석 선호를 반영했습니다.");
+        } else if (prefs.contains("FRONT") && first.position().equals("FRONT")) {
+            reasons.add("앞쪽 좌석 선호를 반영했습니다.");
+        }
+        return new SeatRecommendation(pairSeat, bestScore, reasons, List.of(), seats);
+    }
+
+    private int scoreForPair(Seat seat, List<String> prefs, List<String> access,
+                             boolean allowsFrontAccessibilityBoost) {
+        int score = 0;
+        if (prefs.contains(seat.position())) score += 6;
+        if (prefs.contains("AISLE") && seat.side().equals("AISLE")) score += 4;
+        if (prefs.contains("WINDOW") && seat.side().equals("WINDOW")) score += 4;
+        if (access.contains("WALKING_DIFFICULTY") && allowsFrontAccessibilityBoost && seat.position().equals("FRONT")) score += 5;
+        if (access.contains("WALKING_DIFFICULTY") && seat.side().equals("AISLE")) score += 3;
+        if (access.contains("MOTION_SICKNESS") && allowsFrontAccessibilityBoost && seat.position().equals("FRONT")) score += 4;
+        if (access.contains("ELDERLY_CARE") && allowsFrontAccessibilityBoost && seat.position().equals("FRONT")) score += 4;
+        return score;
     }
 }

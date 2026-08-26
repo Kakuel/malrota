@@ -39,6 +39,7 @@ public class ConversationController {
 
         ConversationParseResponse parsed = parseService.parse(request, session);
         if (parsed != null) {
+            session.setIntent(parsed.intent());
             session.mergeConditions(
                     parsed.departure(),
                     parsed.arrival(),
@@ -48,6 +49,7 @@ public class ConversationController {
                     parsed.servicePreference(),
                     parsed.busGradePreference(),
                     parsed.passengers(),
+                    parsed.passengerMentioned(),
                     parsed.seatPreferences(),
                     parsed.accessibilityNeeds(),
                     parsed.clarificationPrompt()

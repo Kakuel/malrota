@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, type ReactNode } from 'react'
-import type { BusSchedule, SeatRecommendation, BusRecommendation } from './types'
+import type { BusSchedule, SeatRecommendation, BusRecommendation, ConversationSessionResult } from './types'
 // 화면 종류
 export type Screen = 'home' | 'bus' | 'seat' | 'confirm' | 'history' | 'mypage'
 
@@ -16,6 +16,9 @@ interface AppStateValue {
 
   sessionId: string | null
   setSessionId: (id: string | null) => void
+
+  conditions: ConversationSessionResult | null
+  setConditions: (conditions: ConversationSessionResult | null) => void
 
   messages: ChatMessage[]
   addMessage: (role: 'app' | 'user', text: string) => void
@@ -57,6 +60,7 @@ const initialMessage: ChatMessage = {
 export function AppStateProvider({ children }: { children: ReactNode }) {
   const [screen, setScreen] = useState<Screen>('home')
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [conditions, setConditions] = useState<ConversationSessionResult | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([initialMessage])
   const [buses, setBuses] = useState<BusSchedule[]>([])
   const [recommendations, setRecommendations] = useState<BusRecommendation[]>([])
@@ -87,6 +91,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       value={{
         screen, setScreen,
         sessionId, setSessionId,
+        conditions, setConditions,
         messages, addMessage, resetMessages,
         buses, setBuses,
         recommendations, setRecommendations,

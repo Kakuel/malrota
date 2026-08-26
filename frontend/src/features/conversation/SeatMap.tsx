@@ -21,33 +21,34 @@ export function SeatMap({ seats, recommendedNo, alternativeNos, selectedNo, onSe
 
   // 전체 격자의 열 수 (제일 큰 column 값)
   const totalCols = Math.max(...seats.map((s) => s.column))
+  const recommendedNos = recommendedNo.split(',').map((seatNo) => seatNo.trim())
 
   function seatColor(seat: Seat): string {
     if (!seat.available) return '#cbd5e1'
     if (seat.seatNo === selectedNo) return '#2563eb'
-    if (seat.seatNo === recommendedNo) return '#16a34a'
+    if (recommendedNos.includes(seat.seatNo)) return '#16a34a'
     if (alternativeNos && alternativeNos.includes(seat.seatNo)) return '#86efac'
     return '#f1f5f9'
   }
 
   return (
-    <div style={{ marginTop: '20px' }}>
-      <h3>좌석 배치도</h3>
-      <div style={{ textAlign: 'right', marginBottom: '8px', color: '#64748b' }}>🚍 앞 (운전석)</div>
+    <div style={{ marginTop: '12px' }}>
+      <h3 style={{ margin: '0 0 6px', fontSize: '1rem' }}>좌석 배치도</h3>
+      <div style={{ textAlign: 'right', marginBottom: '4px', color: '#64748b', fontSize: '0.8rem' }}>🚍 앞 (운전석)</div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
         {sortedRows.map(([rowNum, rowSeats]) => {
           // column 위치로 좌석 찾기 (없으면 빈 칸)
           const byColumn = new Map<number, Seat>()
           for (const s of rowSeats) byColumn.set(s.column, s)
 
           return (
-            <div key={rowNum} style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            <div key={rowNum} style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
               {Array.from({ length: totalCols }, (_, i) => i + 1).map((colPos) => {
                 const seat = byColumn.get(colPos)
                 if (!seat) {
                   // 빈 칸 (통로) — 좌석 자리만큼 공간 차지
-                  return <div key={colPos} style={{ width: '44px', height: '44px' }} />
+                  return <div key={colPos} style={{ width: '36px', height: '36px' }} />
                 }
                 return (
                   <button
@@ -56,13 +57,13 @@ export function SeatMap({ seats, recommendedNo, alternativeNos, selectedNo, onSe
                     onClick={() => onSelect?.(seat)}
                     disabled={!seat.available}
                     style={{
-                      width: '44px',
-                      height: '44px',
-                      borderRadius: '8px',
+                      width: '36px',
+                      height: '36px',
+                      borderRadius: '7px',
                       border: '1px solid #94a3b8',
                       background: seatColor(seat),
                       color: seat.available ? '#0f172a' : '#94a3b8',
-                      fontSize: '0.8rem',
+                      fontSize: '0.72rem',
                       cursor: seat.available && onSelect ? 'pointer' : 'default',
                     }}
                   >
@@ -75,7 +76,7 @@ export function SeatMap({ seats, recommendedNo, alternativeNos, selectedNo, onSe
         })}
       </div>
 
-      <div style={{ marginTop: '16px', fontSize: '0.9rem', display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+      <div style={{ marginTop: '10px', fontSize: '0.8rem', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
         <LegendItem color="#16a34a" label="추천 좌석" />
         <LegendItem color="#86efac" label="같은 조건 좌석" />
         <LegendItem color="#f1f5f9" label="빈 자리" border />
@@ -90,8 +91,8 @@ function LegendItem({ color, label, border }: { color: string; label: string; bo
     <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
       <span
         style={{
-          width: '18px',
-          height: '18px',
+          width: '14px',
+          height: '14px',
           borderRadius: '4px',
           background: color,
           border: border ? '1px solid #94a3b8' : 'none',

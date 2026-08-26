@@ -8,9 +8,10 @@ import './ConversationPanel.css'
 interface VoicePanelProps {
   onUserSpeak: (text: string) => void | Promise<void>
   loading?: boolean
+  compact?: boolean
 }
 
-export function VoicePanel({ onUserSpeak, loading }: VoicePanelProps) {
+export function VoicePanel({ onUserSpeak, loading, compact = false }: VoicePanelProps) {
   const { messages } = useAppState()
   const [text, setText] = useState('')
   const [showInput, setShowInput] = useState(false)
@@ -51,8 +52,8 @@ export function VoicePanel({ onUserSpeak, loading }: VoicePanelProps) {
 
   return (
     <div>
-      <div className="chat-container">
-        {messages.slice(-4).map((m, i) => (
+      <div className={`chat-container ${compact ? 'compact' : ''}`}>
+        {(compact ? messages.slice(-1) : messages.slice(-4)).map((m, i) => (
           <div key={i} className={`chat-row ${m.role}`}>
             {m.role === 'app' && <img src={logo} alt="" className="chat-avatar" />}
             <div className={`chat-bubble ${m.role}`}>{m.text}</div>

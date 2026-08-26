@@ -1,4 +1,6 @@
 import { useEffect, useRef } from 'react'
+import { parseConversation, recommendBuses } from '../api/conversationApi'
+import { recommendSeat } from '../api/seatApi'
 import { useAppState } from '../features/conversation/AppState'
 import { VoicePanel, speak } from '../features/conversation/VoicePanel'
 import './HomePage.css'
@@ -21,7 +23,9 @@ export function ConfirmPage() {
   const {
     selectedBus, seat, selectedSeatNo,
     setScreen, addMessage, addBooking, resetMessages,
-    setSelectedBus, setSeat, setSelectedSeatNo, setSessionId,
+    setSelectedBus, setSeat, setSelectedSeatNo, sessionId, setSessionId,
+    conditions, setConditions, setRecommendations,
+    seatPreferences, setSeatPreferences, accessibilityNeeds, setAccessibilityNeeds,
   } = useAppState()
 
   const announced = useRef(false)
@@ -51,19 +55,85 @@ export function ConfirmPage() {
       setSeat(null)
       setSelectedSeatNo(null)
       setSessionId(null)
+      setConditions(null)
       resetMessages()
       setScreen('home')
     }, 2000)
   }
 
-  function handleUserSpeak(text: string) {
+  function sameValues(first: string[], second: string[]) {
+    return first.length === second.length && first.every((value) => second.includes(value))
+  }
+
+  function busConditionsChanged(next: NonNullable<typeof conditions>) {
+    if (!conditions) return false
+    return conditions.departure !== next.departure
+      || conditions.arrival !== next.arrival
+      || conditions.date !== next.date
+      || conditions.departureTime !== next.departureTime
+      || conditions.timePreference !== next.timePreference
+      || conditions.servicePreference !== next.servicePreference
+      || conditions.busGradePreference !== next.busGradePreference
+  }
+
+  async function handleUserSpeak(text: string) {
     addMessage('user', text)
-    if (text.includes('결제') || text.includes('네') || text.includes('할게') || text.includes('좋아') || text.includes('그래') || text.includes('예')) {
-      pay()
-    } else if (text.includes('취소') || text.includes('아니') || text.includes('뒤로')) {
-      setScreen('seat')
-    } else {
-      appSay('결제하시려면 결제할게요, 취소하시려면 취소라고 말씀해 주세요.')
+    try {
+      const session = await parseConversation(text, sessionId)
+      setSessionId(session.sessionId)
+
+      if (session.intent === 'CANCEL' || text.includes('뒤로')) {
+        appSay('결제를 취소하고 좌석 선택 화면으로 돌아갈게요.')
+        setScreen('seat')
+        return
+      }
+
+      const nextSeatPreferences = session.seatPreferences ?? []
+      const nextAccessibilityNeeds = session.accessibilityNeeds ?? []
+      const preferencesChanged = !sameValues(nextSeatPreferences, seatPreferences)
+        || !sameValues(nextAccessibilityNeeds, accessibilityNeeds)
+      const searchConditionsChanged = busConditionsChanged(session)
+      setConditions(session)
+      setSeatPreferences(nextSeatPreferences)
+      setAccessibilityNeeds(nextAccessibilityNeeds)
+
+      if (searchConditionsChanged && session.departure && session.arrival && session.date) {
+        const nextRecommendations = await recommendBuses({
+          departure: session.departure,
+          arrival: session.arrival,
+          date: session.date,
+          departureTime: session.departureTime,
+          timePreference: session.timePreference,
+          servicePreference: session.servicePreference,
+          busGradePreference: session.busGradePreference,
+        })
+        setRecommendations(nextRecommendations)
+        appSay('바뀐 출발 조건에 맞춰 버스를 다시 찾아볼게요.')
+        setScreen('bus')
+        return
+      }
+
+      if (preferencesChanged && selectedBus) {
+        const updatedSeat = await recommendSeat({
+          seatPreferences: nextSeatPreferences as any,
+          accessibilityNeeds: nextAccessibilityNeeds as any,
+          busGrade: selectedBus.grade,
+          passengers: session.passengers,
+        })
+        setSeat(updatedSeat)
+        setSelectedSeatNo(null)
+        appSay('바뀐 좌석 조건을 반영했습니다. 좌석을 다시 확인해 주세요.')
+        setScreen('seat')
+        return
+      }
+
+      if (text.includes('결제') || text.includes('네') || text.includes('할게') || text.includes('좋아') || text.includes('그래') || text.includes('예')) {
+        pay()
+      } else {
+        appSay('결제하시려면 결제할게요, 조건을 바꾸려면 원하는 시간이나 좌석을 말씀해 주세요.')
+      }
+    } catch {
+      appSay('말씀하신 조건을 처리하지 못했습니다. 서버 상태를 확인해 주세요.')
     }
   }
 
@@ -90,30 +160,30 @@ export function ConfirmPage() {
         <div style={{
           border: '2px dashed #f07f21',
           borderRadius: '16px',
-          padding: '24px',
+          padding: '16px',
           background: '#fff8f0',
         }}>
-          <div style={{ textAlign: 'center', fontSize: '1.3rem', fontWeight: 800, color: '#f07f21' }}>
+          <div style={{ textAlign: 'center', fontSize: '1.15rem', fontWeight: 800, color: '#f07f21' }}>
             🎫 승차권
           </div>
-          <div style={{ borderTop: '1px solid #f0d5b8', margin: '16px 0' }} />
+          <div style={{ borderTop: '1px solid #f0d5b8', margin: '10px 0' }} />
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
             <div style={{ textAlign: 'center' }}>
               <div style={{ color: '#58665f', fontSize: '0.9rem' }}>출발</div>
-              <div style={{ fontSize: '1.3rem', fontWeight: 800 }}>{selectedBus.departure}</div>
+              <div style={{ fontSize: '1.15rem', fontWeight: 800 }}>{selectedBus.departure}</div>
               <div style={{ color: '#f07f21' }}>{formatTime(selectedBus.departureTime)}</div>
             </div>
             <div style={{ fontSize: '1.5rem', alignSelf: 'center' }}>→</div>
             <div style={{ textAlign: 'center' }}>
               <div style={{ color: '#58665f', fontSize: '0.9rem' }}>도착</div>
-              <div style={{ fontSize: '1.3rem', fontWeight: 800 }}>{selectedBus.arrival}</div>
+              <div style={{ fontSize: '1.15rem', fontWeight: 800 }}>{selectedBus.arrival}</div>
               <div style={{ color: '#f07f21' }}>{formatTime(selectedBus.arrivalTime)}</div>
             </div>
           </div>
 
-          <div style={{ borderTop: '1px dashed #f0d5b8', margin: '16px 0' }} />
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', fontSize: '1rem' }}>
+          <div style={{ borderTop: '1px dashed #f0d5b8', margin: '10px 0' }} />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '7px', fontSize: '0.92rem' }}>
             <div><span style={{ color: '#58665f' }}>날짜 </span>{formatDate(selectedBus.departureTime)}</div>
             <div><span style={{ color: '#58665f' }}>등급 </span>{selectedBus.grade}</div>
             <div><span style={{ color: '#58665f' }}>좌석 </span><b style={{ color: '#f07f21' }}>{seatNo}</b></div>
@@ -121,11 +191,11 @@ export function ConfirmPage() {
           </div>
         </div>
 
-        <button type="button" className="send-button" onClick={pay} style={{ marginTop: '20px' }}>
+        <button type="button" className="send-button" onClick={pay} style={{ marginTop: '10px' }}>
           결제하기
         </button>
 
-        <VoicePanel onUserSpeak={handleUserSpeak} />
+        <VoicePanel onUserSpeak={handleUserSpeak} compact />
       </div>
     </div>
   )

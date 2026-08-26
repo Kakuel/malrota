@@ -9,6 +9,7 @@ export interface SeatRecommendRequest {
   busGrade: string
   seatPreferences: SeatPreference[]
   accessibilityNeeds: AccessibilityNeed[]
+  passengers: number
 }
 
 export function recommendSeat(

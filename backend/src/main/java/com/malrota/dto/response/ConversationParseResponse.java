@@ -12,6 +12,7 @@ public record ConversationParseResponse(
     String servicePreference,
     String busGradePreference,
     int passengers,
+    boolean passengerMentioned,
     List<String> seatPreferences,
     List<String> accessibilityNeeds,
     List<String> missingFields,

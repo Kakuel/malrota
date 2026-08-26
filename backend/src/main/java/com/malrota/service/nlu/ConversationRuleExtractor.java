@@ -49,13 +49,16 @@ public class ConversationRuleExtractor {
     // 24시간제 세부 시간 정규식 (새벽, 아침, 낮, 점심, 저녁, 밤, 심야)
     private static final Pattern TIME_PATTERN = Pattern.compile("(새벽|아침|낮|점심|저녁|밤|심야|오전|오후)?\\s*(\\d{1,2})\\s*시\\s*(?:(\\d{1,2})\\s*분|반)?");
     private static final Pattern COLON_TIME_PATTERN = Pattern.compile("(\\d{1,2}):(\\d{2})");
-    private static final Pattern PASSENGER_PATTERN = Pattern.compile("(\\d+|[한두세네다섯여섯]+)\\s*(?:명|장|인|자리|좌석|표)");
+    private static final Pattern PASSENGER_PATTERN = Pattern.compile("(\\d+|[한두세네다섯여섯]+)\\s*(?:명|장|인|자리|좌석|표|사람|분|식구)");
 
     public RuleParse extract(String text, LocalDateTime baseDateTime) {
         String input = text == null ? "" : text.trim();
         
         String departure = find(DEPARTURE_PATTERN, input);
-        if (departure == null) departure = find(GENERIC_DEP_PATTERN, input);
+        if (departure == null) {
+            String genericDeparture = find(GENERIC_DEP_PATTERN, input);
+            departure = isLikelyTerminalName(genericDeparture) ? genericDeparture : null;
+        }
 
         String arrival = find(ARRIVAL_PATTERN, input);
         if (arrival == null) arrival = find(GENERIC_ARR_PATTERN, input);
@@ -64,6 +67,7 @@ public class ConversationRuleExtractor {
         List<String> seats = extractSeatPreferences(input);
         List<String> needs = extractAccessibilityNeeds(input);
         int passengerCount = extractPassengers(input);
+        boolean passengerMentioned = hasPassengerExpression(input);
 
         return new RuleParse(
                 input.contains("취소") ? "CANCEL" : (input.contains("문의") || input.contains("얼마") ? "INQUIRY" : "BUS_SEARCH"),
@@ -75,6 +79,7 @@ public class ConversationRuleExtractor {
                 servicePreference(input),
                 busGradePreference(input),
                 passengerCount,
+                passengerMentioned,
                 seats,
                 needs,
                 hasSeatPreferenceExpression(input),
@@ -185,8 +190,10 @@ public class ConversationRuleExtractor {
         if (text.contains("둘이") || text.contains("두 명") || text.contains("2명") || text.contains("두 장") || text.contains("2장") || text.contains("부부")) return 2;
         
         // 가족 호칭 + 동행 표현 -> 2명 자동 계산
-        boolean hasFamily = List.of("할머니", "할아버지", "할망", "하르방", "손주", "손자", "손녀", "손지", "영감", "바깥양반", "안사람", "집사람", "딸래미", "아들래미").stream().anyMatch(text::contains);
-        boolean hasTogether = List.of("데리고", "데꼬", "모시고", "이랑", "하고", "고치", "같이", "둘이", "탈 건데", "갈 건데").stream().anyMatch(text::contains);
+        boolean hasFamily = List.of("할머니", "할아버지", "할망", "하르방", "할멈", "할아바이", "할마이",
+                "손주", "손자", "손녀", "손지", "영감", "영감탱이", "영감재이", "영감쟁이",
+                "바깥양반", "안사람", "집사람", "딸래미", "아들래미", "삼춘").stream().anyMatch(text::contains);
+        boolean hasTogether = List.of("데리고", "데꼬", "모시고", "이랑", "하고", "고치", "같이", "나란히", "둘이", "탈 건데", "갈 건데").stream().anyMatch(text::contains);
         if (hasFamily && hasTogether) return 2;
 
         Matcher passengers = PASSENGER_PATTERN.matcher(text);
@@ -205,6 +212,20 @@ public class ConversationRuleExtractor {
         return 1;
     }
 
+    private boolean hasPassengerExpression(String text) {
+        if (List.of("혼자", "한 명", "1명", "한 장", "1장", "둘이", "두 명", "2명", "두 장", "2장", "부부")
+                .stream().anyMatch(text::contains)) {
+            return true;
+        }
+        if (PASSENGER_PATTERN.matcher(text).find()) return true;
+
+        boolean hasFamily = List.of("할머니", "할아버지", "손주", "손자", "손녀", "영감", "바깥양반", "안사람", "집사람", "삼춘")
+                .stream().anyMatch(text::contains);
+        boolean hasTogether = List.of("데리고", "데꼬", "모시고", "같이", "나란히", "함께", "탈 건데", "갈 건데")
+                .stream().anyMatch(text::contains);
+        return hasFamily && hasTogether;
+    }
+
     private List<String> extractSeatPreferences(String text) {
         List<String> result = new ArrayList<>();
         if (!text.contains("창가 말고") && !text.contains("창가말고") && text.contains("창가")) result.add("WINDOW");
@@ -221,10 +242,11 @@ public class ConversationRuleExtractor {
         if (List.of("다리", "무릎", "허리", "관절", "시큰", "삭신", "도가니", "지팡이", "계단", "하영 힘들", "절임").stream().anyMatch(text::contains)) {
             result.add("WALKING_DIFFICULTY");
         }
-        if (List.of("어르신", "할머니", "할아버지", "할망", "하르방", "손주", "손자", "손녀", "손지", "영감", "바깥양반").stream().anyMatch(text::contains)) {
+        if (List.of("어르신", "할머니", "할아버지", "할망", "하르방", "할멈", "할아바이", "할마이",
+                "손주", "손자", "손녀", "손지", "영감", "영감탱이", "영감재이", "영감쟁이", "바깥양반", "삼춘").stream().anyMatch(text::contains)) {
             result.add("ELDERLY_CARE");
         }
-        if (List.of("멀미", "속이 메스", "울렁", "토해", "옴팡지게").stream().anyMatch(text::contains)) {
+        if (List.of("멀미", "속이 메스", "메스꺼", "울렁", "토해", "옴팡지게").stream().anyMatch(text::contains)) {
             result.add("MOTION_SICKNESS");
         }
         return result;
@@ -239,15 +261,15 @@ public class ConversationRuleExtractor {
             if (h < 21) return "EVENING";
             return "NIGHT";
         }
-        if (text.contains("오전") || text.contains("아침") || text.contains("새벽")) return "MORNING";
-        if (text.contains("오후") || text.contains("낮") || text.contains("점심")) return "AFTERNOON";
-        if (text.contains("저녁")) return "EVENING";
+        if (text.contains("오전") || text.contains("아침") || text.contains("새벽") || text.contains("꼭두새벽")) return "MORNING";
+        if (text.contains("오후") || text.contains("낮") || text.contains("점심") || text.contains("낮참")) return "AFTERNOON";
+        if (text.contains("저녁") || text.contains("해 질") || text.contains("해질") || text.contains("어스름") || text.contains("땅거미")) return "EVENING";
         if (text.contains("밤") || text.contains("야간") || text.contains("심야")) return "NIGHT";
         return "ANY";
     }
 
     private String servicePreference(String text) {
-        if (List.of("첫차", "시방", "싸게싸게", "젤 빠른", "일찍이").stream().anyMatch(text::contains)) return "FIRST";
+        if (List.of("첫차", "시방", "싸게싸게", "젤 빠른", "제일 빠른", "일찍이", "꼭두새벽", "새벽녘").stream().anyMatch(text::contains)) return "FIRST";
         if (text.contains("막차")) return "LAST";
         return "ANY";
     }
@@ -264,6 +286,11 @@ public class ConversationRuleExtractor {
         return matcher.find() ? matcher.group(1) : null;
     }
 
+    private boolean isLikelyTerminalName(String value) {
+        if (value == null || value.isBlank()) return false;
+        return !List.of("불편해", "편해", "힘들어", "좋아", "싫어", "그래").contains(value);
+    }
+
     private LocalDate safeDate(int year, int month, int day) {
         try { return LocalDate.of(year, month, day); } catch (Exception e) { return null; }
     }
@@ -277,11 +304,11 @@ public class ConversationRuleExtractor {
     }
 
     private boolean hasSeatPreferenceExpression(String text) {
-        return List.of("창가", "통로", "앞쪽", "앞자리", "앞좌석", "중간", "뒤쪽", "뒷자리", "혼자").stream().anyMatch(text::contains);
+        return List.of("창가", "통로", "앞쪽", "앞자리", "앞좌석", "중간", "뒤쪽", "뒷자리", "뒷좌석", "혼자").stream().anyMatch(text::contains);
     }
 
     private boolean hasAccessibilityExpression(String text) {
-        return List.of("다리", "무릎", "허리", "어르신", "할머니", "할아버지", "손주", "영감", "멀미", "도가니", "시큰", "삭신").stream().anyMatch(text::contains);
+        return List.of("다리", "무릎", "허리", "어르신", "할머니", "할아버지", "할망", "하르방", "할멈", "손주", "손지", "영감", "영감탱이", "영감재이", "멀미", "메스꺼", "도가니", "시큰", "삭신").stream().anyMatch(text::contains);
     }
 
     public record RuleParse(
@@ -294,6 +321,7 @@ public class ConversationRuleExtractor {
             String servicePreference,
             String busGradePreference,
             int passengers,
+            boolean passengerMentioned,
             List<String> seatPreferences,
             List<String> accessibilityNeeds,
             boolean seatPreferenceMentioned,

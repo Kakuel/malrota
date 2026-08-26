@@ -17,6 +17,7 @@ public class ConversationSessionResponse {
 
     private String sessionId;
     private ConversationState state;
+    private String intent;
 
     private String departure;
     private String arrival;
@@ -40,6 +41,7 @@ public class ConversationSessionResponse {
         return ConversationSessionResponse.builder()
                 .sessionId(session.getSessionId())
                 .state(session.getState())
+                .intent(session.getIntent())
                 .departure(session.getDeparture())
                 .arrival(session.getArrival())
                 .date(session.getDate())

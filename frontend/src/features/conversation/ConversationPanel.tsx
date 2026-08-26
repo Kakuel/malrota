@@ -8,6 +8,7 @@ import type { ConversationSessionResult } from './types'
 export function ConversationPanel() {
   const {
     sessionId, setSessionId,
+    setConditions,
     addMessage, setScreen,
     setSeatPreferences, setAccessibilityNeeds,
     setRecommendations,
@@ -27,6 +28,7 @@ export function ConversationPanel() {
     try {
       const session: ConversationSessionResult = await parseConversation(sendText, sessionId)
       setSessionId(session.sessionId)
+      setConditions(session)
 
       // 파이썬이 더 물어볼 게 있으면 (clarificationPrompt) → 그걸 물어보기
       if (session.clarificationPrompt) {
@@ -41,7 +43,6 @@ export function ConversationPanel() {
           // 안전망: 혹시 필수값 없으면 되묻기
           appSay('출발지, 도착지, 날짜를 말씀해 주세요.')
         } else {
-          appSay('조건에 맞는 버스를 찾았어요. 추천 버스를 보여드릴게요.')
           // 좌석 선호·접근성 창고에 저장 (좌석 추천에 쓰려고)
           setSeatPreferences(session.seatPreferences ?? [])
           setAccessibilityNeeds(session.accessibilityNeeds ?? [])

@@ -44,4 +44,29 @@ class ConversationRuleExtractorTest {
         assertThat(result.servicePreference()).isEqualTo("FIRST");
         assertThat(result.passengers()).isEqualTo(2);
     }
+
+    @Test
+    void extracts_unique_dialect_and_accessibility_terms_without_python_server() {
+        var result = extractor.extract("글피 꼭두새벽에 할멈하고 부산행 두 장, 메스꺼우니까네 중간 창가로 줘", base);
+
+        assertThat(result.arrival()).isEqualTo("부산");
+        assertThat(result.date()).hasToString("2026-08-27");
+        assertThat(result.timePreference()).isEqualTo("MORNING");
+        assertThat(result.servicePreference()).isEqualTo("FIRST");
+        assertThat(result.passengers()).isEqualTo(2);
+        assertThat(result.seatPreferences()).containsExactlyInAnyOrder("MIDDLE", "WINDOW");
+        assertThat(result.accessibilityNeeds()).containsExactlyInAnyOrder("ELDERLY_CARE", "MOTION_SICKNESS");
+    }
+
+    @Test
+    void extracts_sunset_and_fast_service_dialect_terms() {
+        var result = extractor.extract("해 질 녘에 영감재이랑 대전행 제일 빠른 일반 버스", base);
+
+        assertThat(result.arrival()).isEqualTo("대전");
+        assertThat(result.timePreference()).isEqualTo("EVENING");
+        assertThat(result.servicePreference()).isEqualTo("FIRST");
+        assertThat(result.busGradePreference()).isEqualTo("GENERAL");
+        assertThat(result.passengers()).isEqualTo(2);
+        assertThat(result.accessibilityNeeds()).containsExactly("ELDERLY_CARE");
+    }
 }
