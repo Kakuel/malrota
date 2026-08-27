@@ -192,13 +192,9 @@ public class BusSearchService {
         BusSchedule closest;
         boolean isFirstOrLast = "FIRST".equalsIgnoreCase(request.servicePreference()) || "LAST".equalsIgnoreCase(request.servicePreference());
         if (isFirstOrLast) {
-            // 첫차/막차는 "요청 시각" 자체가 그날 실제 첫차/막차의 시각이다(위
-            // withEffectiveDepartureTime 참고) — 그 버스 자신이 정의상 거리 0으로 항상 "가까운
-            // 시간"이어야 한다. 실제로 보고된 사고: 반대로 계산해서, 진짜 막차(비쌈)가 "최저가"로
-            // 소진되고 오히려 더 먼 대안 버스가 "가까운 시간"으로 나와 라벨이 거꾸로 뒤바뀌어
-            // 보였다("최저가"인데 옆 카드보다 비싼 역설). 막차 자신을 "가까운 시간"으로 고정하고,
-            // 같은 요청 시간창 안의 다른 더 저렴한 대안을 "최저가"로 삼는다. 다른 대안이 전혀 없으면
-            // 막차 자신과 합쳐서 보여준다.
+            // 첫차/막차는 실제 첫차·막차 시각이 요청 시각으로 보정되어 있으므로, 그 운행편은
+            // 정의상 항상 "가까운 시간"이다. 최저가는 같은 요청 시간창 안의 다른 운행편에서만
+            // 고르고, 다른 후보가 없으면 같은 운행편에 두 라벨을 함께 붙인다.
             closest = recommendationPool.stream()
                     .min(Comparator.comparingInt(s -> weightedDistance(departureTime(s), requestedTime)))
                     .orElse(null);
@@ -255,7 +251,6 @@ public class BusSearchService {
                 })
                 .toList();
     }
-
     /** 이르게 출발하는 버스에 소폭의 페널티를 더해, 같은 거리면 늦게 출발하는 버스를 우선한다. */
     private int weightedDistance(LocalTime departure, LocalTime requestedTime) {
         int diffMinutes = (int) (departure.toSecondOfDay() - requestedTime.toSecondOfDay()) / 60;
@@ -365,4 +360,3 @@ public class BusSearchService {
         return value != null && !value.isBlank();
     }
 }
-
