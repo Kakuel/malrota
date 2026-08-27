@@ -2,13 +2,13 @@
 
 말로 타는 고속버스. 고령자와 디지털 취약계층을 위한 음성 중심 고속버스 검색·좌석 추천 서비스입니다.
 
-> 현재 저장소는 **개발 환경과 프로젝트 골격만 구성한 단계**입니다. 실제 TAGO 조회, watsonx 조건 추출, STT/TTS, 예매 기능은 아직 구현하지 않았습니다.
+> 현재는 음성 기반 예매 지원 프로토타입입니다. 실제 TAGO 운행 정보 조회와 예매 내역 저장을 지원하며, 운송사 결제·실시간 좌석 재고 연동은 범위에 포함하지 않습니다.
 
 ## 기술 구성
 
 - Frontend: React, TypeScript, Create React App (`react-scripts`)
 - Backend: Java 17, Spring Boot, Gradle
-- Planned integrations: TAGO, IBM watsonx.ai, IBM Speech to Text/Text to Speech
+- Integrations: TAGO, IBM watsonx.ai, IBM Speech to Text/Text to Speech
 - Booking and seat availability: MVP에서는 Mock 사용
 
 Node.js는 React 개발과 빌드에만 사용하며 별도의 Node.js 백엔드는 두지 않습니다.
@@ -85,3 +85,4 @@ cd backend
 - [데모 시나리오](docs/demo-scenarios.md)
 - [좌석 추천 정책](docs/recommendation-policy.md)
 - [기여 방법](CONTRIBUTING.md)
+- [GitHub Pages + Railway 배포 안내](docs/deployment.md)

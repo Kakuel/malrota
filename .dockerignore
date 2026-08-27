@@ -1,0 +1,21 @@
+# Railway Docker 빌드에는 Spring Boot 백엔드 소스만 필요하다.
+.git
+.github
+ai
+docs
+frontend
+
+# 로컬 빌드 산출물·캐시와 비밀값은 이미지 빌드 컨텍스트에서 제외한다.
+backend/build
+backend/build-*
+backend/.gradle
+backend/.env
+**/.env
+**/.env.*
+
+# IDE 및 운영체제 파일
+.idea
+.vscode
+*.iml
+.DS_Store
+Thumbs.db
