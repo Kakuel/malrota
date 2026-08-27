@@ -42,3 +42,16 @@ textarea {
 ::selection {
   background: rgb(126 224 168 / 55%);
 }
+
+.mallota-logo-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mallota-logo-text {
+  font-family: 'Dancing Script', cursive;
+  font-weight: 700;
+  font-size: 1.7rem;
+  line-height: 1;
+}

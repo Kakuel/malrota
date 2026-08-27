@@ -1,4 +1,4 @@
-import logo from '../assets/logo.png'
+import MallotaLogo from '../components/common/MallotaLogo'
 import { ConversationPanel } from '../features/conversation/ConversationPanel'
 import { useAppState } from '../features/conversation/AppState'
 import './HomePage.css'
@@ -12,7 +12,7 @@ export function HomePage() {
       {/* 상단: 로고 + 이용 안내 */}
       <header className="home-header">
         <div className="home-brand">
-          <img src={logo} alt="말로타" />
+          <MallotaLogo size={32} />
         </div>
       </header>
 
