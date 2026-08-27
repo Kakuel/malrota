@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { speechToText, textToSpeech } from '../../api/voiceApi'
 import { useVoiceRecorder } from './useVoiceRecorder'
 import { useAppState } from './AppState'
@@ -33,8 +33,14 @@ export function VoicePanel({ onUserSpeak, loading, compact = false }: VoicePanel
   const [showInput, setShowInput] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const bottomRef = useRef<HTMLDivElement>(null)
 
   const { recording, startRecording, stopRecording } = useVoiceRecorder()
+
+  // 새 메시지가 오면 대화창을 최신 메시지로 자동 스크롤한다 — 예전 메시지는 위로 스크롤해서 볼 수 있도록
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [messages.length])
 
   async function handleMicClick() {
     if (recording) {
@@ -43,7 +49,11 @@ export function VoicePanel({ onUserSpeak, loading, compact = false }: VoicePanel
       try {
         const audio = await stopRecording()
         const data = await speechToText(audio)
-        if (data.transcript) await onUserSpeak(data.transcript)
+        if (data.transcript) {
+          await onUserSpeak(data.transcript)
+        } else {
+          setError('무슨 말씀인지 못 들었어요. 다시 한 번 말씀해 주세요.')
+        }
       } catch (e) {
         setError('음성 인식에 실패했습니다. 다시 시도해 주세요.')
       } finally {
@@ -51,9 +61,9 @@ export function VoicePanel({ onUserSpeak, loading, compact = false }: VoicePanel
       }
     } else {
       setError(null)
+      // 사용자가 답하기 시작할 때 이전 안내가 마이크 입력에 섞이지 않게 한다.
+      stopSpeaking()
       try {
-        // 사용자가 답하기 시작할 때 이전 안내가 마이크 입력에 섞이지 않게 한다.
-        stopSpeaking()
         await startRecording()
       } catch (e) {
         setError('마이크를 사용할 수 없습니다. 권한을 확인해 주세요.')
@@ -65,68 +75,87 @@ export function VoicePanel({ onUserSpeak, loading, compact = false }: VoicePanel
     if (!text.trim()) return
     const t = text
     setText('')
+    setError(null) // 이전 음성 인식 실패 메시지가 남아있으면, 직접 입력이 성공해도 화면에 계속 떠 있었다
     stopSpeaking()
     await onUserSpeak(t)
+  }
+
+  const micArea = (
+    <div className="mic-area">
+      <button
+        type="button"
+        className={`mic-button ${recording ? 'recording' : ''}`}
+        onClick={handleMicClick}
+        disabled={transcribing || loading}
+      >
+        {recording ? (
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="white">
+            <rect x="6" y="6" width="12" height="12" rx="2" />
+          </svg>
+        ) : (
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="white">
+            <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z" />
+            <path d="M17 11a1 1 0 0 1 2 0 7 7 0 0 1-6 6.92V20h2a1 1 0 0 1 0 2H9a1 1 0 0 1 0-2h2v-2.08A7 7 0 0 1 5 11a1 1 0 0 1 2 0 5 5 0 0 0 10 0z" />
+          </svg>
+        )}
+      </button>
+      <div className="mic-label">
+        {recording ? '녹음 중... (누르면 완료)' : transcribing ? '인식 중...' : loading ? '처리 중...' : '눌러서 말하기'}
+      </div>
+      {!compact && (
+        <button type="button" className="mic-sublabel" onClick={() => setShowInput((v) => !v)}>
+          직접 글씨로 입력하기
+        </button>
+      )}
+
+      {!compact && showInput && (
+        <div style={{ width: '100%' }}>
+          <textarea
+            className="chat-input"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="여기에 입력하세요"
+          />
+          <button
+            type="button"
+            className="send-button"
+            onClick={handleSendInput}
+            disabled={loading || !text.trim()}
+          >
+            보내기
+          </button>
+        </div>
+      )}
+    </div>
+  )
+
+  // compact 모드에서는 대화 기록·직접 입력이 필요 없는 화면(버스/좌석/결제)이라, 감싸는
+  // 박스형 패널(chat-container) 없이 마이크 버튼만 그 화면 배경 위에 바로 보여준다.
+  if (compact) {
+    return (
+      <div>
+        {error && <p style={{ color: 'red' }}>{error}</p>}
+        {micArea}
+      </div>
+    )
   }
 
   return (
     <div>
       <div className="chat-container">
-        {!compact && messages.slice(-2).map((m, i) => (
-          <div key={i} className={`chat-row ${m.role}`}>
-            {m.role === 'app' && <img src={logo} alt="" className="chat-avatar" />}
-            <div className={`chat-bubble ${m.role}`}>{m.text}</div>
-          </div>
-        ))}
+        <div className="chat-messages">
+          {messages.map((m, i) => (
+            <div key={i} className={`chat-row ${m.role}`}>
+              {m.role === 'app' && <img src={logo} alt="" className="chat-avatar" />}
+              <div className={`chat-bubble ${m.role}`}>{m.text}</div>
+            </div>
+          ))}
+          <div ref={bottomRef} />
+        </div>
 
         {error && <p style={{ color: 'red' }}>{error}</p>}
 
-        <div className="mic-area">
-          <button
-            type="button"
-            className={`mic-button ${recording ? 'recording' : ''}`}
-            onClick={handleMicClick}
-            disabled={transcribing || loading}
-          >
-            {recording ? (
-              <svg width="36" height="36" viewBox="0 0 24 24" fill="white">
-                <rect x="6" y="6" width="12" height="12" rx="2" />
-              </svg>
-            ) : (
-              <svg width="40" height="40" viewBox="0 0 24 24" fill="white">
-                <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z" />
-                <path d="M17 11a1 1 0 0 1 2 0 7 7 0 0 1-6 6.92V20h2a1 1 0 0 1 0 2H9a1 1 0 0 1 0-2h2v-2.08A7 7 0 0 1 5 11a1 1 0 0 1 2 0 5 5 0 0 0 10 0z" />
-              </svg>
-            )}
-          </button>
-          <div className="mic-label">
-            {recording ? '녹음 중... (누르면 완료)' : transcribing ? '인식 중...' : loading ? '처리 중...' : '눌러서 말하기'}
-          </div>
-          {!compact && (
-            <button type="button" className="mic-sublabel" onClick={() => setShowInput((v) => !v)}>
-              직접 글씨로 입력하기
-            </button>
-          )}
-
-          {!compact && showInput && (
-            <div style={{ width: '100%' }}>
-              <textarea
-                className="chat-input"
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                placeholder="여기에 입력하세요"
-              />
-              <button
-                type="button"
-                className="send-button"
-                onClick={handleSendInput}
-                disabled={loading || !text.trim()}
-              >
-                보내기
-              </button>
-            </div>
-          )}
-        </div>
+        {micArea}
       </div>
     </div>
   )

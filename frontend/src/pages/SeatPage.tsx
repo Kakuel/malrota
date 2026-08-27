@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { SeatMap, findSeatGroup, formatSeats } from '../features/conversation/SeatMap'
 import { useAppState } from '../features/conversation/AppState'
 import { VoicePanel, speak } from '../features/conversation/VoicePanel'
@@ -14,51 +14,40 @@ export function SeatPage() {
     seat, selectedSeatNo, setSelectedSeatNo, setScreen, addMessage, passengers,
   } = useAppState()
   const [selecting, setSelecting] = useState(false)
-  const [manualSeatNos, setManualSeatNos] = useState<string[]>([])
   const [seatHint, setSeatHint] = useState<string | null>(null)
+  const [manualPicks, setManualPicks] = useState<Seat[]>([])
 
   function appSay(t: string) {
     addMessage('app', t)
     speak(t)
   }
 
+  // 화면에 들어오면 이 좌석을 고른 이유(예: "통로를 선호하신다고 해서...")를 한 번만 읽어준다.
+  const announcedReason = useRef(false)
+  useEffect(() => {
+    if (!announcedReason.current && seat?.reasons && seat.reasons.length > 0) {
+      announcedReason.current = true
+      appSay(seat.reasons.join(' '))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seat])
+
   // 백엔드가 함께 추천한 좌석 묶음(2/3/4인)이다. 직접 선택을 시작하면 이 묶음 대신 한 자리씩 고른다.
   const hasGroup = Boolean(seat?.adjacentPair && seat.alternatives.length > 0)
   const groupSeats = hasGroup && seat?.bestSeat ? [seat.bestSeat, ...seat.alternatives] : []
   const groupSize = groupSeats.length
+  // 백엔드가 반환한 묶음 크기(groupSize) 대신 실제 인원수를 기준으로 삼아,
+  // 묶음을 못 찾아 좌석이 1개만 돌아온 경우에도 인원수만큼 고르도록 한다.
   const requiredSeatCount = Math.max(passengers, 1)
 
-  function startManualSelection() {
+  function startSelecting() {
     setSelecting(true)
-    setManualSeatNos([])
+    setManualPicks([])
+    setSeatHint(null)
     setSelectedSeatNo(null)
-    setSeatHint(`${requiredSeatCount}명 중 첫 번째 좌석을 눌러 주세요. 한 자리씩 따로 선택할 수 있어요.`)
   }
 
-  /**
-   * 직접 선택은 추천 연석 규칙을 강제하지 않는다.
-   * 인원수만큼 채워진 뒤 다른 좌석을 누르면 가장 먼저 고른 좌석부터 교체해, 순서대로 바꿀 수 있다.
-   */
-  function selectSeatIndividually(clicked: Seat) {
-    let next: string[]
-    if (manualSeatNos.includes(clicked.seatNo)) {
-      next = manualSeatNos.filter((seatNo) => seatNo !== clicked.seatNo)
-    } else if (manualSeatNos.length < requiredSeatCount) {
-      next = [...manualSeatNos, clicked.seatNo]
-    } else {
-      next = [...manualSeatNos.slice(1), clicked.seatNo]
-    }
-
-    setManualSeatNos(next)
-    setSelectedSeatNo(next.length > 0 ? next.join(', ') : null)
-    if (next.length < requiredSeatCount) {
-      setSeatHint(`${requiredSeatCount}명 중 ${next.length}자리 선택됨: 다음 좌석을 눌러 주세요.`)
-    } else {
-      setSeatHint(`${next.join(', ')} 선택 완료. 다른 좌석을 누르면 가장 먼저 고른 좌석부터 교체됩니다.`)
-    }
-  }
-
-  // 음성으로 창가/통로를 고르는 경우에는 기존처럼 함께 추천 가능한 묶음을 우선 고른다.
+  // 음성으로 창가/통로를 고르는 경우에는 함께 앉으실 나머지 자리까지 같은 모양으로 골라준다.
   function selectSuggestedGroupFrom(clicked: Seat) {
     if (!hasGroup) {
       setSelectedSeatNo(clicked.seatNo)
@@ -67,13 +56,32 @@ export function SeatPage() {
     }
     const group = findSeatGroup(seat?.allSeats ?? [], clicked, groupSize)
     if (!group) {
-      setSeatHint(`${clicked.seatNo}번은 함께 추천할 자리가 없어요. 화면에서 한 자리씩 직접 선택해 주세요.`)
+      // 이 버스에 애초에 나란히/앞뒤로 붙은 자리가 하나도 없으면 직접 선택 모드로 안내
+      setSeatHint(`${clicked.seatNo}번은 함께 앉으실 나머지 자리가 없어요. "다른 좌석 선택하기"로 한 분씩 골라주세요.`)
       return false
     }
     setSelectedSeatNo(formatSeats(group))
     setSeatHint(null)
     return true
   }
+
+  // 나란히/앞뒤가 아니어도, 인원수만큼 한 분씩 원하는 자리를 따로따로 고를 수 있게 함
+  function toggleManualPick(clicked: Seat) {
+    setManualPicks((prev) => {
+      const already = prev.some((s) => s.seatNo === clicked.seatNo)
+      const next = already
+        ? prev.filter((s) => s.seatNo !== clicked.seatNo)
+        : prev.length >= requiredSeatCount
+          ? [...prev.slice(1), clicked]
+          : [...prev, clicked]
+
+      setSelectedSeatNo(next.length > 0 ? formatSeats(next) : null)
+      setSeatHint(next.length < requiredSeatCount ? `${next.length}/${requiredSeatCount}명 자리를 고르셨어요. 나머지 분의 자리도 눌러주세요.` : null)
+      return next
+    })
+  }
+
+  const readyToConfirm = !selecting || manualPicks.length === requiredSeatCount
 
   function finalSeatNoFor(clicked: Seat): string {
     if (!hasGroup) return clicked.seatNo
@@ -82,6 +90,7 @@ export function SeatPage() {
   }
 
   function proceedToConfirmation() {
+    if (!readyToConfirm) return
     const defaultSeatNos = hasGroup ? groupSeats.map((s) => s.seatNo) : [seat?.bestSeat?.seatNo ?? ''].filter(Boolean)
     const chosenSeatNos = splitSeatNos(selectedSeatNo)
     const seatCount = chosenSeatNos.length > 0 ? chosenSeatNos.length : defaultSeatNos.length
@@ -127,9 +136,6 @@ export function SeatPage() {
     )
   }
 
-  const finalSeatNo = selectedSeatNo ?? (hasGroup ? formatSeats(groupSeats) : seat.bestSeat.seatNo)
-  const selectedForMap = manualSeatNos.length > 0 ? manualSeatNos.join(', ') : (selectedSeatNo ?? undefined)
-
   return (
     <div className="phone-frame">
       <header className="home-header">
@@ -138,24 +144,23 @@ export function SeatPage() {
         </button>
       </header>
 
-      <h1 className="home-title" style={{ fontSize: '1.4rem' }}>좌석 선택</h1>
+      <h1 className="home-title" style={{ fontSize: '1.4rem', paddingBottom: '8px' }}>좌석 선택</h1>
 
       <div className="home-body">
-        <p style={{ fontSize: '1.1rem', fontWeight: 700 }}>
-          추천 좌석: <span style={{ color: '#f07f21' }}>{finalSeatNo}</span>
-          {hasGroup && <span style={{ fontSize: '0.9rem', color: '#58665f' }}> (함께 배정된 {groupSize}자리)</span>}
-        </p>
-        <ul>
-          {seat.reasons.map((r, i) => (<li key={i}>{r}</li>))}
-        </ul>
-
         {!selecting ? (
-          <button type="button" className="send-button" onClick={startManualSelection} style={{ marginBottom: '12px' }}>
-            직접 좌석 선택하기
+          <button
+            type="button"
+            className="send-button"
+            onClick={startSelecting}
+            style={{ width: '70%', display: 'block', margin: '0 auto 8px' }}
+          >
+            다른 좌석 선택하기
           </button>
         ) : (
           <p style={{ color: '#f07f21' }}>
-            좌석을 한 자리씩 눌러 주세요. {requiredSeatCount}명 중 {manualSeatNos.length}자리 선택됨
+            {requiredSeatCount > 1
+              ? `${requiredSeatCount}명이 각자 앉으실 자리를 한 분씩 눌러주세요.`
+              : '앉고 싶은 좌석을 눌러주세요.'}
           </p>
         )}
 
@@ -164,12 +169,18 @@ export function SeatPage() {
         <SeatMap
           seats={seat.allSeats}
           recommendedNo={hasGroup ? formatSeats(groupSeats) : seat.bestSeat.seatNo}
-          alternativeNos={hasGroup ? [] : seat.alternatives.map((s) => s.seatNo)}
-          selectedNo={selectedForMap}
-          onSelect={selecting ? selectSeatIndividually : undefined}
+          alternativeNos={seat.tiedAlternativeSeats.map((s) => s.seatNo)}
+          selectedNo={selectedSeatNo ?? undefined}
+          onSelect={selecting ? toggleManualPick : undefined}
         />
 
-        <button type="button" className="send-button" onClick={proceedToConfirmation} style={{ marginTop: '16px' }}>
+        <button
+          type="button"
+          className="send-button"
+          onClick={proceedToConfirmation}
+          disabled={!readyToConfirm}
+          style={{ marginTop: '16px', opacity: readyToConfirm ? 1 : 0.5 }}
+        >
           이 좌석으로 예약하기
         </button>
 

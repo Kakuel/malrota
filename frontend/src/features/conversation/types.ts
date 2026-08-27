@@ -2,7 +2,12 @@ export type TimePreference = 'MORNING' | 'AFTERNOON' | 'EVENING' | 'ANY'
 
 export type SeatPreference = 'FRONT' | 'WINDOW' | 'AISLE' | 'ADJACENT'
 
-export type AccessibilityNeed = 'WALKING_DIFFICULTY' | 'MOTION_SICKNESS'
+export type AccessibilityNeed =
+  | 'WALKING_DIFFICULTY'
+  | 'MOTION_SICKNESS'
+  | 'ELDERLY_CARE'
+  | 'PREGNANCY'
+  | 'VISUAL_IMPAIRMENT'
 
 export interface SearchCondition {
   departure?: string
@@ -27,7 +32,12 @@ export interface BusSchedule {
 export interface BusRecommendation {
   bus: BusSchedule
   reason: string
-  label: string
+  labels: string[]
+}
+
+export interface BusRecommendResponse {
+  recommendations: BusRecommendation[]
+  routeExists: boolean // false면 조건이 아니라 이 출발지-도착지 사이에 직행 노선 자체가 없다는 뜻
 }
 
 // 백엔드 PostgreSQL에 저장되는 예매 내역 형식
@@ -59,8 +69,9 @@ export interface SeatRecommendation {
   score: number
   reasons: string[]
   alternatives: Seat[]
-  adjacentPair: boolean   // alternatives가 bestSeat과 나란히 붙은 연석인지
+  adjacentPair: boolean   // alternatives가 bestSeat과 함께 배정된 그룹 좌석인지 - 동률 대안 구분 용도
   allSeats: Seat[]
+  tiedAlternativeSeats: Seat[] // 추천(그룹 포함)과 점수가 동률인 다른 좌석/그룹 — "같은 조건 좌석" 표시용
 }
 
 export type ConversationStateValue =
@@ -92,4 +103,6 @@ export interface ConversationSessionResult {
   // (예: "더 빠른/더 늦은 거 없어?" → 방금 보여준 버스보다 이르거나 늦은 시간을 찾아달라는 요청)
   wantsEarlierBus: boolean
   wantsLaterBus: boolean
+  // 출발지-도착지 사이에 직행 노선 자체가 없다는 1회성 신호 — true면 세션을 초기화해야 한다.
+  routeNotFound: boolean
 }

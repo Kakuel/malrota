@@ -145,11 +145,22 @@ export function SeatMap({ seats, recommendedNo, alternativeNos, selectedNo, onSe
   }
 
   return (
-    <div style={{ marginTop: '20px' }}>
-      <h3>좌석 배치도</h3>
+    <div style={{ marginTop: '4px' }}>
+      <h3 style={{ margin: '0 0 8px' }}>좌석 배치도</h3>
       <div style={{ textAlign: 'right', marginBottom: '8px', color: '#64748b' }}>🚍 앞 (운전석)</div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center' }}>
+      {/* 줄 수가 많으면 화면이 다른 창보다 훨씬 길어지므로, 배치도만 따로 스크롤되게 높이를 제한한다 */}
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '8px',
+        alignItems: 'center',
+        maxHeight: '240px',
+        overflowY: 'auto',
+        padding: '4px',
+        border: '1px solid #e2e8f0',
+        borderRadius: '12px',
+      }}>
         {sortedRows.map(([rowNum, rowSeats]) => {
           // column 위치로 좌석 찾기 (없으면 빈 칸 = 통로)
           const byColumn = new Map<number, Seat>()
@@ -194,7 +205,7 @@ export function SeatMap({ seats, recommendedNo, alternativeNos, selectedNo, onSe
       <div style={{ marginTop: '16px', fontSize: '0.9rem', display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
         <LegendItem color="#16a34a" label="추천 좌석" />
         {selectedList.length > 0 && <LegendItem color="#2563eb" label="선택한 좌석" />}
-        <LegendItem color="#86efac" label="같은 조건 좌석" />
+        {alternativeNos.length > 0 && <LegendItem color="#86efac" label="같은 조건 좌석" />}
         <LegendItem color="#f1f5f9" label="빈 자리" border />
         <LegendItem color="#cbd5e1" label="예약됨" />
       </div>
