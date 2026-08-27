@@ -270,18 +270,15 @@ class BusSearchServiceTest {
     }
 
     @Test
-    void closest_time_card_widens_from_thirty_minutes_to_one_hour_when_nothing_closer_exists() {
-        // "최저가랑 조건에 맞는 가장 가까운 시간 +-30분으로, 없으면 1시간까지"라는 요청에 따라,
-        // 30분 이내에 "최저가"와 구분되는 다른 후보가 없으면 1시간까지 범위를 넓혀서 "가까운 시간"을
-        // 찾아야 한다. ONLY_WITHIN_30(요청 시각과 정확히 일치)은 유일한 30분 이내 후보라 "최저가"로
-        // 소진되고, WITHIN_HOUR(45분 후)가 그다음으로 넓은 범위에서 "가까운 시간"으로 나와야 한다.
+    void recommendation_uses_two_hours_earlier_and_thirty_minutes_later_window() {
         TagoClient client = new TagoClient(null) {
             @Override public String findTerminalId(String terminalName) { return terminalName; }
 
             @Override public List<BusSchedule> searchBuses(String depId, String arrId, String date) {
                 return List.of(
-                        schedule("ONLY_WITHIN_30", "202608250900", 5000),
-                        schedule("WITHIN_HOUR", "202608250945", 15000)
+                        schedule("EARLY_CHEAP", "202608250730", 5_000), // 90분 전 — 허용
+                        schedule("EXACT", "202608250900", 15_000),
+                        schedule("TOO_LATE", "202608250945", 1_000)    // 45분 후 — 제외
                 );
             }
         };
@@ -291,15 +288,15 @@ class BusSearchServiceTest {
                 "서울", "대전", "2026-08-25", "09:00", "ANY", "ANY", "ANY"));
 
         assertThat(recs).filteredOn(r -> r.labels().contains("최저가"))
-                .extracting(r -> r.bus().routeId()).containsExactly("ONLY_WITHIN_30");
+                .extracting(r -> r.bus().routeId()).containsExactly("EARLY_CHEAP");
         assertThat(recs).filteredOn(r -> r.labels().contains("가까운 시간"))
-                .extracting(r -> r.bus().routeId()).containsExactly("WITHIN_HOUR");
+                .extracting(r -> r.bus().routeId()).containsExactly("EXACT");
+        assertThat(recs).extracting(r -> r.bus().routeId()).doesNotContain("TOO_LATE");
     }
-
     @Test
-    void closest_time_card_duplicates_the_cheapest_bus_when_nothing_else_exists_within_one_hour() {
+    void closest_time_card_duplicates_the_cheapest_bus_when_nothing_else_exists_in_requested_window() {
         // "가장 가까운 시간"/"최저가" 두 카테고리는 항상 둘 다 떠야 한다 — 중복돼도 괜찮다. TOO_FAR는
-        // 요청 시각보다 90분 이르다(1시간 확장 범위 밖)라서, 이 노선엔 진짜로 다른 버스가 없다.
+        // 요청 시각보다 121분 이르다(2시간 허용 범위 밖)라서, 이 노선엔 진짜로 다른 버스가 없다.
         // 이 경우 카드를 생략하는 대신 최저가와 같은 버스를 "가까운 시간"에도 중복으로 보여준다.
         TagoClient client = new TagoClient(null) {
             @Override public String findTerminalId(String terminalName) { return terminalName; }
@@ -307,7 +304,7 @@ class BusSearchServiceTest {
             @Override public List<BusSchedule> searchBuses(String depId, String arrId, String date) {
                 return List.of(
                         schedule("ONLY_WITHIN_30", "202608250900", 5000),
-                        schedule("TOO_FAR", "202608250730", 15000)
+                        schedule("TOO_FAR", "202608250659", 15000)
                 );
             }
         };
@@ -348,17 +345,14 @@ class BusSearchServiceTest {
     }
 
     @Test
-    void always_shows_both_categories_even_when_both_cards_cost_the_same() {
-        // 실제로 보고된 사고: "최저가"와 "가까운 시간" 두 카드의 가격이 똑같으니까(같은 노선/등급)
-        // 둘 중 하나의 라벨이 통째로 사라지거나 다른 이름으로 바뀌었다. 가격이 같아도 두 카테고리는
-        // 각자 정직한 이름 그대로, 항상 둘 다 떠야 한다 — 서로 다른 버스라면 카드도 둘이어야 한다.
+    void combines_categories_when_the_only_other_bus_is_later_than_the_allowed_window() {
         TagoClient client = new TagoClient(null) {
             @Override public String findTerminalId(String terminalName) { return terminalName; }
 
             @Override public List<BusSchedule> searchBuses(String depId, String arrId, String date) {
                 return List.of(
-                        schedule("CLOSE", "202608251930", 16_000), // 요청 시각 30분 전, 30분 이내 유일한 후보
-                        schedule("FAR", "202608252100", 16_000)    // 1시간 후, 같은 가격
+                        schedule("CLOSE", "202608251930", 16_000), // 요청 시각 30분 전, 허용 범위
+                        schedule("FAR", "202608252100", 16_000)    // 1시간 후, 허용 범위 밖
                 );
             }
         };
@@ -367,10 +361,8 @@ class BusSearchServiceTest {
         List<BusRecommendation> recs = service.recommend(new BusSearchRequest(
                 "서울", "대전", "2026-08-25", "20:00", "ANY", "ANY", "ANY"));
 
-        assertThat(recs).hasSize(2);
-        assertThat(recs).filteredOn(r -> r.labels().contains("최저가"))
-                .extracting(r -> r.bus().routeId()).containsExactly("CLOSE");
-        assertThat(recs).filteredOn(r -> r.labels().contains("가까운 시간"))
-                .extracting(r -> r.bus().routeId()).containsExactly("FAR");
+        assertThat(recs).hasSize(1);
+        assertThat(recs.get(0).bus().routeId()).isEqualTo("CLOSE");
+        assertThat(recs.get(0).labels()).containsExactlyInAnyOrder("최저가", "가까운 시간");
     }
 }
