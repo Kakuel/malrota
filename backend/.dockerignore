@@ -1,0 +1,13 @@
+# 로컬 산출물·캐시와 비밀값은 Railway 이미지 빌드에서 제외한다.
+build
+build-*
+.gradle
+.env
+.env.*
+
+# IDE 및 운영체제 파일
+.idea
+.vscode
+*.iml
+.DS_Store
+Thumbs.db
