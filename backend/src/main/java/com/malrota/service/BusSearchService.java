@@ -17,9 +17,6 @@ public class BusSearchService {
     /** 요청 시각보다 이른 버스는 최대 2시간 전, 늦은 버스는 최대 30분 후까지만 추천한다. */
     private static final int MAX_EARLY_MINUTES = 120;
     private static final int MAX_LATE_MINUTES = 30;
-    /** 추천 카드(최저가/가까운 시간)는 먼저 30분 이내에서 후보를 찾고, 없으면 1시간까지 범위를 넓힌다. */
-    private static final int OTHER_TIME_PRIMARY_MINUTES = 30;
-    private static final int OTHER_TIME_FALLBACK_MINUTES = 60;
     /** 이르게 출발하는 버스에 주는 소폭의 페널티(분) — 같은 거리면 늦게 출발하는 쪽을 더 선호한다. */
     private static final int EARLY_PENALTY_MINUTES = 10;
 
@@ -152,28 +149,21 @@ public class BusSearchService {
         LocalTime requestedTime = parseTime(effective.departureTime());
         if (requestedTime == null) return result;
 
-        // "최저가"는 30분 이내 후보 중에서 고르고, 30분 이내에 아무것도 없을 때만 1시간까지 넓힌다.
-        List<BusSchedule> primaryPool = withinMinutes(gradeFiltered, requestedTime, OTHER_TIME_PRIMARY_MINUTES);
-        List<BusSchedule> cheapestPool = !primaryPool.isEmpty() ? primaryPool
-                : withinMinutes(gradeFiltered, requestedTime, OTHER_TIME_FALLBACK_MINUTES);
-        if (cheapestPool.isEmpty()) return result;
+        // 추천 카드와 검색 목록은 같은 시간창을 사용한다. 요청 시각보다 이른 버스는 최대 2시간 전,
+        // 늦은 버스는 최대 30분 후까지만 허용한다.
+        List<BusSchedule> recommendationPool = withinRequestedTimeWindow(gradeFiltered, requestedTime);
+        if (recommendationPool.isEmpty()) return result;
 
-        BusSchedule cheapest = cheapestPool.stream().min(Comparator.comparingInt(BusSchedule::charge)).orElse(null);
+        BusSchedule cheapest = recommendationPool.stream()
+                .min(Comparator.comparingInt(BusSchedule::charge))
+                .orElse(null);
 
-        // "가까운 시간": 최저가와 다른 버스를 30분 이내에서 먼저 찾고, (최저가가 그 안의 유일한
-        // 후보였던 경우 등) 없으면 1시간까지 범위를 넓힌다. 이르게 출발하는 쪽보다 늦게 출발하는
-        // 쪽을 살짝 더 선호한다. 그래도 다른 버스가 전혀 없으면 최저가와 같은 버스로 합쳐서
-        // 보여준다 — 두 카테고리("최저가"/"가까운 시간")는 항상 둘 다 존재해야 한다.
-        BusSchedule closest = primaryPool.stream()
+        // 같은 시간창에서 최저가와 다른 운행편을 우선 찾는다. 이른 버스보다 늦은 버스에 작은
+        // 페널티를 더해, 같은 차이라면 늦게 출발하는 선택을 우선한다.
+        BusSchedule closest = recommendationPool.stream()
                 .filter(s -> cheapest == null || !isSameBus(s, cheapest))
                 .min(Comparator.comparingInt(s -> weightedDistance(departureTime(s), requestedTime)))
                 .orElse(null);
-        if (closest == null) {
-            closest = withinMinutes(gradeFiltered, requestedTime, OTHER_TIME_FALLBACK_MINUTES).stream()
-                    .filter(s -> cheapest == null || !isSameBus(s, cheapest))
-                    .min(Comparator.comparingInt(s -> weightedDistance(departureTime(s), requestedTime)))
-                    .orElse(null);
-        }
         if (closest == null) {
             closest = cheapest;
         }
@@ -206,9 +196,14 @@ public class BusSearchService {
                 && a.departureTime() != null && a.departureTime().equals(b.departureTime());
     }
 
-    private List<BusSchedule> withinMinutes(List<BusSchedule> schedules, LocalTime requestedTime, int maxMinutes) {
+    private List<BusSchedule> withinRequestedTimeWindow(List<BusSchedule> schedules, LocalTime requestedTime) {
         return schedules.stream()
-                .filter(s -> minutesFromRequested(departureTime(s), requestedTime) <= maxMinutes)
+                .filter(s -> {
+                    LocalTime departure = departureTime(s);
+                    if (departure.equals(LocalTime.MAX)) return false;
+                    int difference = (int) (departure.toSecondOfDay() - requestedTime.toSecondOfDay()) / 60;
+                    return difference >= -MAX_EARLY_MINUTES && difference <= MAX_LATE_MINUTES;
+                })
                 .toList();
     }
 
