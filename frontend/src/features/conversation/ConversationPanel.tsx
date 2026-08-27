@@ -137,7 +137,7 @@ export function ConversationPanel() {
               appSay(`${dep}에서 ${arr}까지 가는 직행 버스 노선을 찾지 못했어요. 다시 어디에서 어디로 가시는지 말씀해 주세요.`)
               setSessionId(null)
             } else {
-              appSay('해당 조건의 버스를 찾지 못했습니다.')
+              appSay('요청하신 시각 기준으로 이전 2시간부터 이후 30분까지 맞는 버스를 찾지 못했어요. 더 이른 출발 시간이나 다른 버스 등급으로 다시 말씀해 주세요.')
             }
           } else {
             appSay(buildConditionSummary(session, dep, arr, dt, departureTime))
@@ -164,3 +164,4 @@ export function ConversationPanel() {
 
   return <VoicePanel onUserSpeak={handleUserSpeak} loading={loading} />
 }
+
