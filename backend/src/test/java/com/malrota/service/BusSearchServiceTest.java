@@ -52,6 +52,48 @@ class BusSearchServiceTest {
     }
 
     @Test
+    void finds_a_route_through_any_terminal_of_an_undisambiguated_multi_terminal_city() {
+        // 실제로 보고된 사고: "서울"처럼 세부 터미널이 여러 개인 도시는, 사용자가 "서울경부/센트럴
+        // 시티/동서울 중 어디로?"에 답해야만 노선 존재를 확인했다 — 그 사이 한 턴이 낭비됐다.
+        // 세부 터미널이 안 정해졌어도, 그 도시 터미널 중 하나(여기선 센트럴시티)라도 노선이 있으면
+        // 바로 "노선 있음"으로 판단해야 한다.
+        TagoClient client = new TagoClient(null) {
+            @Override public String findTerminalId(String terminalName) { return terminalName; }
+
+            @Override public List<BusSchedule> searchBuses(String depId, String arrId, String date) {
+                // 서울경부/동서울 -> 전주는 노선이 없고, 센트럴시티 -> 전주만 노선이 있다.
+                if ("센트럴시티".equals(depId) && "전주".equals(arrId)) {
+                    return List.of(schedule("R01", "202608280800", 20_000));
+                }
+                return List.of();
+            }
+        };
+
+        BusSearchService service = new BusSearchService(client);
+        BusSearchRequest request = new BusSearchRequest("서울", "전주", "2026-08-28");
+
+        assertThat(service.hasAnyScheduleBetween(request)).isTrue();
+    }
+
+    @Test
+    void reports_no_route_when_none_of_a_multi_terminal_citys_terminals_has_service() {
+        // 위 테스트의 대칭 — 세부 터미널이 안 정해졌어도, 그 도시의 모든 터미널을 확인한 뒤에야
+        // "노선 없음"으로 판단해야 한다(임의로 하나만 확인하고 없다고 단정하면 안 된다).
+        TagoClient client = new TagoClient(null) {
+            @Override public String findTerminalId(String terminalName) { return terminalName; }
+
+            @Override public List<BusSchedule> searchBuses(String depId, String arrId, String date) {
+                return List.of();
+            }
+        };
+
+        BusSearchService service = new BusSearchService(client);
+        BusSearchRequest request = new BusSearchRequest("서울", "전주", "2026-08-28");
+
+        assertThat(service.hasAnyScheduleBetween(request)).isFalse();
+    }
+
+    @Test
     void premium_grade_filter_excludes_the_pricier_late_night_premium_variant() {
         // 실제로 보고된 사고: 앱에서 보이는 "프리미엄" 요금이 실제(TAGO)와 다른 것 같다는 문의.
         // 원인은 TAGO가 "심야프리미엄"(52,600원)을 "프리미엄"(43,900원)과는 별도의, 더 비싼 등급으로
@@ -197,6 +239,34 @@ class BusSearchServiceTest {
 
         assertThat(recs).extracting(r -> r.bus().routeId()).doesNotContain("CHEAP_BUT_EARLY");
         assertThat(recs).extracting(r -> r.bus().routeId()).contains("NEAR_LAST");
+    }
+
+    @Test
+    void last_bus_itself_is_labeled_closest_time_even_when_a_cheaper_alternative_gets_the_cheapest_label() {
+        // 실제로 보고된 사고: "막차"를 요청했는데, 그날 진짜 막차(22시, 심야우등이라 비쌈)가
+        // "최저가"로 소진되고, 60분 이내로 범위를 넓혀 찾은 더 저렴한 다른 버스(21시, 우등)가
+        // "가까운 시간"으로 나왔다 — "가까운 시간"이라는 버스가 실제로는 요청 시각(=막차 시각)과
+        // 더 멀리 떨어져 있는 라벨 역전 현상이었다. 막차 자신은 정의상 거리 0이므로 항상 "가까운
+        // 시간"이어야 하고, 그보다 싼 대안이 있다면 그게 "최저가"여야 한다.
+        TagoClient client = new TagoClient(null) {
+            @Override public String findTerminalId(String terminalName) { return terminalName; }
+
+            @Override public List<BusSchedule> searchBuses(String depId, String arrId, String date) {
+                return List.of(
+                        schedule("CHEAPER_ALTERNATIVE", "202608252100", 11_000), // 막차 1시간 전, 더 저렴
+                        schedule("ACTUAL_LAST_BUS", "202608252200", 13_200)      // 그날 진짜 막차, 더 비쌈
+                );
+            }
+        };
+
+        BusSearchService service = new BusSearchService(client);
+        List<BusRecommendation> recs = service.recommend(new BusSearchRequest(
+                "동대구", "부산", "2026-08-25", null, "ANY", "LAST", "ANY"));
+
+        assertThat(recs).filteredOn(r -> r.labels().contains("가까운 시간"))
+                .extracting(r -> r.bus().routeId()).containsExactly("ACTUAL_LAST_BUS");
+        assertThat(recs).filteredOn(r -> r.labels().contains("최저가"))
+                .extracting(r -> r.bus().routeId()).containsExactly("CHEAPER_ALTERNATIVE");
     }
 
     @Test
