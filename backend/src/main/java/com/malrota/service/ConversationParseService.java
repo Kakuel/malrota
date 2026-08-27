@@ -60,8 +60,11 @@ public class ConversationParseService {
                 sessionValue(session, ConversationSession::getTimePreference));
         ConversationParseResponse llmResult = null;
 
-        // watsonx.ai LLM 호출
-        if (watsonxClient != null && watsonxClient.isConfigured()) {
+        // watsonx.ai LLM 호출 — STT 오인식 교정은 반드시 LLM의 판단을 거쳐야 하므로, 설정 여부를
+        // 미리 걸러 건너뛰지 않고 항상 시도한다. 키가 없거나 비활성화 상태라 호출이 실패해도 아래
+        // catch가 잡아서 룰베이스 결과로 조용히 대체하므로, 결과적으로 동작은 동일하게 안전하다 —
+        // 다만 "설정 안 됨"과 "호출했는데 실패함"을 더 이상 구분하지 않는다.
+        if (watsonxClient != null) {
             try {
                 String prompt = buildPrompt(userText, isoDateTime, session, rules);
                 String rawAnswer = watsonxClient.ask(prompt);
@@ -71,8 +74,57 @@ public class ConversationParseService {
             }
         }
 
+        // [STT 오인식 교정] STT가 "참가죽"(창가 쪽), "두잠"(두 장)처럼 잘못 받아쓴 경우, 룰베이스는
+        // 정규식/키워드 매칭이라 원문 그대로는 못 알아듣는다. LLM이 직전 질문 등 문맥으로 교정한
+        // 텍스트(correctedText)가 원문과 다르면, 그 교정된 텍스트로 룰베이스를 한 번 더 돌려서 원본
+        // 텍스트 결과 대신 사용한다 — 정규식의 결정성과 LLM의 문맥 이해를 함께 활용하기 위해서다.
+        // LLM이 미설정/실패했으면 correctedText가 없으니 원본 텍스트 결과를 그대로 쓴다(기존 폴백).
+        //
+        // 실제로 보고된 사고: "요"처럼 조각난 입력을 교정할 자신이 없자, LLM이 원문을 그대로
+        // 돌려주는 대신 "사용자 발화를 이해하지 못함"이라는 자기 설명 문구를 correctedText에
+        // 담아버렸다. 이걸 그대로 믿으면 사용자가 하지도 않은 말이 화면 말풍선에 뜬다.
+        // isImplausibleCorrection이 "원문 대비 터무니없이 길어진" 경우를 걸러내 이런 사고를 막는다.
+        String correctedText = llmResult != null ? llmResult.correctedText() : null;
+        if (correctedText != null && isImplausibleCorrection(userText, correctedText)) {
+            log.warn("[ConversationParseService] LLM이 그럴듯하지 않은 correctedText를 반환해 무시함: '{}' -> '{}'",
+                    userText, correctedText);
+            correctedText = null;
+        }
+        String effectiveText = (correctedText != null && !correctedText.isBlank()) ? correctedText : userText;
+        if (!effectiveText.equals(userText)) {
+            log.info("[ConversationParseService] STT 오인식 교정: '{}' -> '{}'", userText, effectiveText);
+            rules = ruleExtractor.extract(effectiveText, now,
+                    sessionValue(session, ConversationSession::getTimePreference));
+        } else if (llmResult != null) {
+            log.info("[ConversationParseService] LLM 응답 수신(교정 없음): '{}'", userText);
+        } else {
+            log.info("[ConversationParseService] LLM 미사용(미설정/실패), 원본 텍스트로 처리: '{}'", userText);
+        }
+
+        // 프론트가 방금 띄운 사용자 말풍선(원본 STT 텍스트)을 교체할 수 있도록, 실제로 값이
+        // 바뀐 경우에만 교정된 텍스트를 실어 보낸다 — 안 바뀌었으면 null(교체할 필요 없음).
+        String correctedTextForResponse = effectiveText.equals(userText) ? null : effectiveText;
+
         // LLM + 룰베이스 + 세션 상태 병합 및 반문 생성
-        return normalize(llmResult, rules, session, userText);
+        return normalize(llmResult, rules, session, effectiveText, correctedTextForResponse);
+    }
+
+    // LLM이 correctedText 자리에 실제 교정 대신 자기 설명/거부 문구를 담아 보내는 경우를 걸러내는
+    // 키워드. "요"처럼 조각난 입력을 교정 못 하겠을 때 실제로 관측된 패턴이다.
+    private static final List<String> IMPLAUSIBLE_CORRECTION_PHRASES = List.of(
+            "이해하지 못", "이해할 수 없", "알 수 없", "모르겠", "파악할 수 없", "인식할 수 없");
+
+    /**
+     * correctedText를 믿을 수 없는 경우인지 판단한다: (1) 자기 설명/거부 문구가 섞여 있거나,
+     * (2) 원문이 아주 짧은데(예: "요") 교정문이 터무니없이 길어진 경우 — 진짜 발음 교정이라면
+     * 원문과 비슷한 길이여야 하므로, 이런 극단적인 확장은 대개 원문을 교정한 게 아니라 LLM이
+     * 아예 다른 내용(설명문 등)을 돌려준 것이다.
+     */
+    private boolean isImplausibleCorrection(String original, String corrected) {
+        if (IMPLAUSIBLE_CORRECTION_PHRASES.stream().anyMatch(corrected::contains)) return true;
+        int originalLength = original == null ? 0 : original.trim().length();
+        int correctedLength = corrected.trim().length();
+        return originalLength <= 3 && correctedLength > originalLength + 6;
     }
 
     private String extractRequestText(ConversationParseRequest request) {
@@ -87,7 +139,8 @@ public class ConversationParseService {
     private ConversationParseResponse normalize(ConversationParseResponse llm,
                                                 ConversationRuleExtractor.RuleParse rules,
                                                 ConversationSession session,
-                                                String rawText) {
+                                                String rawText,
+                                                String correctedTextForResponse) {
         // 우선순위는 항상 "룰베이스(이번 발화에서 확실히 잡힘) → 세션(이미 확정된 사실) → LLM(추측)" 순이다.
         // LLM에게 "언급 없으면 기존 값을 그대로 복사하라"고 프롬프트에 명시했지만, 실제로는 지시를
         // 놓치고 자기 나름의 기본값(예: 특정 터미널 "서울경부"를 도시명 "서울"로, 인원 2명을 1명으로)을
@@ -220,12 +273,12 @@ public class ConversationParseService {
                 boolean arrivalChanged = !Objects.equals(keptArrival, arrival);
                 if (departureChanged && !arrivalChanged) {
                     String askAgain = keptDeparture != null
-                            ? String.format("%s의 다른 터미널로 다시 말씀해 주세요.", keptDeparture)
+                            ? askAgainForTerminal(keptDeparture)
                             : "다른 출발지를 말씀해 주세요.";
                     noRouteMessage = String.format("%s에는 %s까지 가는 직행 버스 노선이 없어요. %s", departure, arrival, askAgain);
                 } else if (arrivalChanged && !departureChanged) {
                     String askAgain = keptArrival != null
-                            ? String.format("%s의 다른 터미널로 다시 말씀해 주세요.", keptArrival)
+                            ? askAgainForTerminal(keptArrival)
                             : "다른 도착지를 말씀해 주세요.";
                     noRouteMessage = String.format("%s에서 %s로 가는 직행 버스 노선이 없어요. %s", departure, arrival, askAgain);
                 } else {
@@ -233,12 +286,33 @@ public class ConversationParseService {
                             "%s에서 %s까지 가는 직행 버스 노선을 찾지 못했어요. 다시 어디에서 어디로 가시는지 말씀해 주세요.",
                             departure, arrival);
                 }
-                return new ConversationParseResponse(intent, keptDeparture, keptArrival, null, null, "ANY", "ANY", "ANY",
-                        1, false, List.of(), false, List.of(), List.of(), noRouteMessage, false, false, true);
+                // 실제로 보고된 사고: 여기서 인원/좌석선호/접근성 등 "이번 실패와 무관한" 필드를
+                // 전부 기본값(1명, 빈 리스트, "ANY")으로 하드코딩해서 반환했다. mergeConditions는
+                // null만 "이번 턴에 언급 없음 = 기존 값 유지"로 해석하고, 빈 리스트나 숫자는 실제
+                // 값으로 여겨 그대로 덮어쓴다 — 그 결과 노선 문제를 한 번이라도 겪으면 이미 답했던
+                // 인원수/좌석선호/접근성(예: "멀미가 심해요")이 조용히 초기화되고, 확인 플래그는
+                // 이미 true라 다시 물어보지도 않는 "정보가 사라지는" 사고가 났다. 이 실패와 무관한
+                // 필드는 전부 세션에 이미 있던 값을 그대로 유지해야 한다.
+                return new ConversationParseResponse(intent, keptDeparture, keptArrival,
+                        sessionValue(session, ConversationSession::getDate),
+                        sessionValue(session, ConversationSession::getDepartureTime),
+                        firstNonBlank(sessionValue(session, ConversationSession::getTimePreference), "ANY"),
+                        firstNonBlank(sessionValue(session, ConversationSession::getServicePreference), "ANY"),
+                        firstNonBlank(sessionValue(session, ConversationSession::getBusGradePreference), "ANY"),
+                        session != null && session.getPassengers() > 0 ? session.getPassengers() : 1,
+                        session != null && session.isPassengerCountConfirmed(),
+                        session != null ? session.getSeatPreferences() : List.of(),
+                        session != null && session.isSeatPreferenceConfirmed(),
+                        session != null ? session.getAccessibilityNeeds() : List.of(),
+                        List.of(), noRouteMessage, false, false, true, correctedTextForResponse);
             }
         }
 
-        String date = firstNonBlank(rules.date() == null ? null : rules.date().toString(), sessionValue(session, ConversationSession::getDate), value(llm, ConversationParseResponse::date));
+        // "이번 주말"처럼 토요일/일요일 중 어느 쪽인지 알 수 없는 날짜는 추측하지 않고 반드시
+        // 되묻는다(ambiguousMeridiem과 같은 방식) — 세션에 이미 있던 옛 날짜나 LLM의 추측으로
+        // 채우지 않는다.
+        String date = rules.ambiguousWeekend() ? null
+                : firstNonBlank(rules.date() == null ? null : rules.date().toString(), sessionValue(session, ConversationSession::getDate), value(llm, ConversationParseResponse::date));
 
         // [예약 가능 날짜 범위 확인] 실제로 확인해 보니 TAGO 실시간 조회 API는 오늘부터 딱
         // MAX_BOOKABLE_DAYS_AHEAD일치(오늘 포함) 시간표만 제공하고, 그 이후 날짜는 노선이 실제로
@@ -285,6 +359,9 @@ public class ConversationParseService {
         boolean passengerMentionedThisTurn = hasPassengerMention(rawText) || rules.passengerMentioned();
         boolean passengerMentioned = passengerMentionedThisTurn
                 || (session != null && session.isPassengerCountConfirmed());
+        log.info("[ConversationParseService] 인원수 판정: rules={}, session={}, llm={} -> 최종={} (이번 턴 언급={})",
+                rules.passengers(), session != null ? session.getPassengers() : null,
+                llm != null ? llm.passengers() : null, passengers, passengerMentionedThisTurn);
 
         String previousPrompt = sessionValue(session, ConversationSession::getClarificationPrompt);
         boolean seatPreferenceQuestionPending = previousPrompt != null && previousPrompt.contains(SEAT_PREFERENCE_QUESTION_MARKER);
@@ -306,7 +383,7 @@ public class ConversationParseService {
 
         List<String> missing = missingRequired(departure, arrival, date, departureTime, servicePreference);
         String prompt = clarificationPrompt(missing, departure, arrival, passengers, passengerMentioned,
-                seatPreferenceMentioned, timePreference, rules.ambiguousMeridiem(),
+                seatPreferenceMentioned, timePreference, rules.ambiguousMeridiem(), rules.ambiguousWeekend(),
                 rules.unrecognizedDeparture(), rules.unrecognizedArrival(), outOfRangeDate);
 
         // 단독 터미널 답변("센트럴시티" 등)이 들어왔지만 지금 되묻고 있는 도시(예: 대전)와 다른
@@ -367,7 +444,7 @@ public class ConversationParseService {
                 intent, nullIfBlank(departure), nullIfBlank(arrival), nullIfBlank(date),
                 nullIfBlank(departureTime), timePreference, servicePreference, busGradePreference, passengers,
                 passengerMentioned, seatPreferences, seatPreferenceMentioned, accessibilityNeeds,
-                missing, prompt, wantsEarlierBus, wantsLaterBus, false
+                missing, prompt, wantsEarlierBus, wantsLaterBus, false, correctedTextForResponse
         );
     }
 
@@ -394,6 +471,21 @@ public class ConversationParseService {
         if (TagoClient.isMultiTerminalCity(value)) return null;
         String city = TagoClient.cityOf(value);
         return (city != null && TagoClient.isMultiTerminalCity(city)) ? city : null;
+    }
+
+    /**
+     * 노선 실패 후 도시 단위로 되돌린 값을 다시 물어볼 때, 그 도시의 실제 터미널명을 나열해서
+     * 알려준다. 실제로 보고된 사고: "OO의 다른 터미널로 다시 말씀해 주세요"처럼 선택지를 안
+     * 나열하면, 사용자도 어떤 이름을 말해야 할지 막막하고 — 다음 턴 LLM의 STT 오인식 교정
+     * 프롬프트에도 "직전 질문"으로 그대로 실리는데 실제 터미널명이 어디에도 없어서, 모델이
+     * 참고할 단서 없이 교정을 시도하다 엉뚱한 지명으로 틀리는 경우가 있었다.
+     */
+    private String askAgainForTerminal(String value) {
+        if (TagoClient.isMultiTerminalCity(value)) {
+            String options = String.join(", ", TagoClient.terminalsInCity(value));
+            return String.format("%s의 다른 터미널(%s) 중에서 다시 말씀해 주세요.", value, options);
+        }
+        return String.format("%s의 다른 터미널로 다시 말씀해 주세요.", value);
     }
 
     private boolean hasPassengerMention(String text) {
@@ -447,7 +539,8 @@ public class ConversationParseService {
     private String clarificationPrompt(List<String> missing, String departure, String arrival,
                                        int passengers, boolean passengerMentioned,
                                        boolean seatPreferenceMentioned, String timePreference,
-                                       boolean ambiguousMeridiem, String unrecognizedDeparture,
+                                       boolean ambiguousMeridiem, boolean ambiguousWeekend,
+                                       String unrecognizedDeparture,
                                        String unrecognizedArrival, LocalDate outOfRangeDate) {
         // 출발/도착 지역 누락 시 질문 (최우선)
         if (missing.contains("departure") && missing.contains("arrival")) {
@@ -486,8 +579,13 @@ public class ConversationParseService {
                 return String.format("죄송해요, %s는 아직 시간표를 조회할 수 없어요. 오늘부터 %d일 이내의 날짜로 다시 말씀해 주세요.",
                         koreanDate(outOfRangeDate), MAX_BOOKABLE_DAYS_AHEAD + 1);
             }
+            // "이번 주말"은 토요일/일요일 중 어느 쪽인지 알 수 없다. 실제로 보고된 사고: 임의로
+            // 토요일로 조용히 확정해버려서 사용자가 일요일을 의도했어도 확인 없이 넘어갔다.
+            if (ambiguousWeekend) {
+                return "이번 주말은 토요일과 일요일 중 언제를 말씀하시는 건가요? 편하게 요일을 말씀해 주세요.";
+            }
             if (missing.contains("departureTime")) {
-                return "언제 출발하시나요? '내일 아침', '이번 주말 오후'처럼 날짜와 시간대를 편하게 말씀해 주세요.";
+                return "언제 출발하시나요? '내일 아침', '이번 주 토요일 오후'처럼 날짜와 시간대를 편하게 말씀해 주세요.";
             }
             return "출발하시는 날짜를 말씀해 주세요. '오늘', '내일', '이번 주 토요일'처럼 말씀하셔도 됩니다.";
         }
@@ -580,6 +678,11 @@ public class ConversationParseService {
                 jsonValue(session.getDepartureTime()), jsonValue(session.getTimePreference()), jsonValue(session.getServicePreference()),
                 jsonValue(session.getBusGradePreference()), session.getPassengers(), jsonArray(session.getSeatPreferences()), jsonArray(session.getAccessibilityNeeds()));
         String ruleHintsJson = ruleHintsJson(rules);
+        // STT 오인식 교정(correctedText)이 직전 질문의 맥락을 활용할 수 있도록 함께 전달한다 — 예를
+        // 들어 직전 질문이 "인원이 몇 분이신가요?"였다면, "두잠"처럼 이상하게 받아쓴 답변도 "두 장"의
+        // 오인식임을 추론할 수 있다.
+        String previousQuestion = sessionValue(session, ConversationSession::getClarificationPrompt);
+        String previousQuestionText = (previousQuestion == null || previousQuestion.isBlank()) ? "(없음)" : previousQuestion;
 
         return """
         당신은 고령자(디지털 소외계층) 및 교통약자를 위한 고속버스 예매 NLU 인공지능입니다.
@@ -591,6 +694,7 @@ public class ConversationParseService {
         - 기준 시각: %s (Asia/Seoul)
         - 기존 수집 정보: %s
         - 이번 발화에서 규칙 기반으로 이미 정확히 인식된 값(참고용): %s
+        - 직전에 사용자에게 물어본 질문(있다면): %s
 
         [핵심 추출 규칙]
         0. "이번 발화에서 규칙 기반으로 이미 정확히 인식된 값"에 들어있는 필드는 이미 확실하니 그 값을 그대로 반환하세요.
@@ -617,6 +721,12 @@ public class ConversationParseService {
            어느 필드인지는 값의 종류로 판단합니다: 지명이면 출발/도착 중 그 지명이 있던 자리(도시가 통째로 바뀌어도 마찬가지), 좌석 위치/등급 표현이면 해당 선호 필드.
            특히 정확한 시각(예: "저녁 7시")과 servicePreference(FIRST/LAST, 예: "첫차")는 절대 동시에 존재할 수 없는 값입니다.
            "저녁 7시 말고 첫차로"라고 하면 departureTime과 timePreference는 반드시 null로 비우고 servicePreference만 "FIRST"로 반환하세요 — 거부된 시각을 servicePreference와 함께 남기면 안 됩니다.
+        8. correctedText(음성 인식 오인식 교정): 사용자 발화는 음성 인식(STT) 결과라서 발음이 비슷한
+           단어로 잘못 받아써지는 경우가 흔합니다(예: "창가 쪽"이 "참가죽"으로, "두 장"이 "두잠"/
+           "부장"/"주점"/"두잔"/"두점" 등으로). "직전에 사용자에게 물어본 질문"을 참고해서 어떤 종류의 답변이었을지
+           문맥으로 판단하고, 명백히 문맥과 안 맞는 단어만 실제로 의도했을 법한 단어로 고쳐
+           correctedText에 담으세요. 문장 구조와 어투, 사투리, 실제로 말이 되는 다른 내용은 그대로
+           유지하고, 확신이 없으면 원문을 그대로 반환하세요 — 없는 내용을 새로 지어내면 안 됩니다.
 
         [반환 JSON 스키마]
         {
@@ -630,51 +740,67 @@ public class ConversationParseService {
           "busGradePreference": "GENERAL | EXCELLENT | PREMIUM | ANY",
           "passengers": 1,
           "seatPreferences": [],
-          "accessibilityNeeds": []
+          "accessibilityNeeds": [],
+          "correctedText": "STT 오인식을 교정한 원문 (교정할 게 없으면 원문 그대로)"
         }
 
         [예시 1 - 표준 발화 및 보행 배려]
         기준 시각: 2026-08-24T10:00:00+09:00
         기존 수집 정보: {}
+        직전에 사용자에게 물어본 질문(있다면): (없음)
         사용자: "내일 오전 대구에서 대전 가는데 우등으로, 다리가 불편해서 앞쪽 창가로 줘"
         결과:
-        {"intent":"BUS_SEARCH","departure":"대구","arrival":"대전","date":"2026-08-25","departureTime":null,"timePreference":"MORNING","servicePreference":"ANY","busGradePreference":"EXCELLENT","passengers":1,"seatPreferences":["FRONT","WINDOW"],"accessibilityNeeds":["WALKING_DIFFICULTY"]}
+        {"intent":"BUS_SEARCH","departure":"대구","arrival":"대전","date":"2026-08-25","departureTime":null,"timePreference":"MORNING","servicePreference":"ANY","busGradePreference":"EXCELLENT","passengers":1,"seatPreferences":["FRONT","WINDOW"],"accessibilityNeeds":["WALKING_DIFFICULTY"],"correctedText":"내일 오전 대구에서 대전 가는데 우등으로, 다리가 불편해서 앞쪽 창가로 줘"}
 
         [예시 2 - 사투리 발화 및 손주 동행]
         기준 시각: 2026-08-24T10:00:00+09:00
         기존 수집 정보: {}
+        직전에 사용자에게 물어본 질문(있다면): (없음)
         사용자: "손주 아 데꼬 부산행 젤 빠른 거 둘이 탈 건데 계단 타기 하영 힘들어"
         결과:
-        {"intent":"BUS_SEARCH","departure":null,"arrival":"부산","date":null,"departureTime":null,"timePreference":"ANY","servicePreference":"FIRST","busGradePreference":"ANY","passengers":2,"seatPreferences":["FRONT"],"accessibilityNeeds":["WALKING_DIFFICULTY","ELDERLY_CARE"]}
+        {"intent":"BUS_SEARCH","departure":null,"arrival":"부산","date":null,"departureTime":null,"timePreference":"ANY","servicePreference":"FIRST","busGradePreference":"ANY","passengers":2,"seatPreferences":["FRONT"],"accessibilityNeeds":["WALKING_DIFFICULTY","ELDERLY_CARE"],"correctedText":"손주 아 데꼬 부산행 젤 빠른 거 둘이 탈 건데 계단 타기 하영 힘들어"}
 
         [예시 3 - 멀티턴 상태 수정]
         기준 시각: 2026-08-24T10:00:00+09:00
         기존 수집 정보: {"intent":"BUS_SEARCH","departure":"서울","arrival":"대전","date":"2026-08-25","departureTime":null,"timePreference":"MORNING","servicePreference":"ANY","busGradePreference":"EXCELLENT","passengers":1,"seatPreferences":["FRONT"],"accessibilityNeeds":["WALKING_DIFFICULTY"]}
+        직전에 사용자에게 물어본 질문(있다면): (없음)
         사용자: "우등 말고 젤 싼 일반으로 바꿔줘"
         결과:
-        {"intent":"BUS_SEARCH","departure":"서울","arrival":"대전","date":"2026-08-25","departureTime":null,"timePreference":"MORNING","servicePreference":"ANY","busGradePreference":"GENERAL","passengers":1,"seatPreferences":["FRONT"],"accessibilityNeeds":["WALKING_DIFFICULTY"]}
+        {"intent":"BUS_SEARCH","departure":"서울","arrival":"대전","date":"2026-08-25","departureTime":null,"timePreference":"MORNING","servicePreference":"ANY","busGradePreference":"GENERAL","passengers":1,"seatPreferences":["FRONT"],"accessibilityNeeds":["WALKING_DIFFICULTY"],"correctedText":"우등 말고 젤 싼 일반으로 바꿔줘"}
 
         [예시 4 - 정확한 시각과 servicePreference는 공존 불가 (규칙 7 핵심 예시)]
         기준 시각: 2026-08-24T10:00:00+09:00
         기존 수집 정보: {"intent":"BUS_SEARCH","departure":"서울","arrival":"대전","date":"2026-08-25","departureTime":"19:00","timePreference":"EVENING","servicePreference":"ANY","busGradePreference":"ANY","passengers":1,"seatPreferences":[],"accessibilityNeeds":[]}
+        직전에 사용자에게 물어본 질문(있다면): (없음)
         사용자: "저녁 일곱시 말고 첫차로 부탁해"
         결과:
-        {"intent":"BUS_SEARCH","departure":"서울","arrival":"대전","date":"2026-08-25","departureTime":null,"timePreference":"ANY","servicePreference":"FIRST","busGradePreference":"ANY","passengers":1,"seatPreferences":[],"accessibilityNeeds":[]}
+        {"intent":"BUS_SEARCH","departure":"서울","arrival":"대전","date":"2026-08-25","departureTime":null,"timePreference":"ANY","servicePreference":"FIRST","busGradePreference":"ANY","passengers":1,"seatPreferences":[],"accessibilityNeeds":[],"correctedText":"저녁 일곱시 말고 첫차로 부탁해"}
 
         [예시 5 - 조건이 여러 턴에 걸쳐 나뉘어 들어올 때 (상태 유지 핵심 예시)]
         기준 시각: 2026-08-24T10:00:00+09:00
         기존 수집 정보: {"intent":"BUS_SEARCH","departure":null,"arrival":null,"date":null,"departureTime":null,"timePreference":"ANY","servicePreference":"FIRST","busGradePreference":"ANY","passengers":1,"seatPreferences":[],"accessibilityNeeds":[]}
+        직전에 사용자에게 물어본 질문(있다면): (없음)
         사용자: "대전에서 서울 가요"
         결과:
-        {"intent":"BUS_SEARCH","departure":"서울","arrival":"대전","date":null,"departureTime":null,"timePreference":"ANY","servicePreference":"FIRST","busGradePreference":"ANY","passengers":1,"seatPreferences":[],"accessibilityNeeds":[]}
+        {"intent":"BUS_SEARCH","departure":"서울","arrival":"대전","date":null,"departureTime":null,"timePreference":"ANY","servicePreference":"FIRST","busGradePreference":"ANY","passengers":1,"seatPreferences":[],"accessibilityNeeds":[],"correctedText":"대전에서 서울 가요"}
+
+        [예시 6 - STT 오인식을 직전 질문 맥락으로 교정 (규칙 8 핵심 예시)]
+        기준 시각: 2026-08-24T10:00:00+09:00
+        기존 수집 정보: {"intent":"BUS_SEARCH","departure":"서울","arrival":"대전","date":"2026-08-25","departureTime":"09:00","timePreference":"MORNING","servicePreference":"ANY","busGradePreference":"ANY","passengers":1,"seatPreferences":[],"accessibilityNeeds":[]}
+        직전에 사용자에게 물어본 질문(있다면): 표를 찾을게요. 탑승하시는 인원은 총 몇 분이신가요? (혼자이시면 '한 명'이라고 말씀해 주세요.)
+        사용자: "두잠이요"
+        결과:
+        {"intent":"BUS_SEARCH","departure":"서울","arrival":"대전","date":"2026-08-25","departureTime":"09:00","timePreference":"MORNING","servicePreference":"ANY","busGradePreference":"ANY","passengers":2,"seatPreferences":[],"accessibilityNeeds":[],"correctedText":"두 장이요"}
 
         [실제 입력]
         기준 시각: %s
         기존 수집 정보: %s
         이번 발화에서 규칙 기반으로 이미 정확히 인식된 값: %s
+        직전에 사용자에게 물어본 질문(있다면): %s
         사용자: "%s"
         결과:
-        """.formatted(isoDateTime, currentStateJson, ruleHintsJson, isoDateTime, currentStateJson, ruleHintsJson, text);
+        """.formatted(isoDateTime, currentStateJson, ruleHintsJson, previousQuestionText,
+                isoDateTime, currentStateJson, ruleHintsJson, previousQuestionText, text);
     }
 
     private String extractJson(String raw) {
