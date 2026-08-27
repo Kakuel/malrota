@@ -6,6 +6,7 @@ import com.malrota.config.TagoProperties;
 import com.malrota.dto.response.BusSchedule;
 import com.malrota.util.KoreanVowelFold;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
@@ -17,8 +18,18 @@ import java.util.*;
 public class TagoClient {
 
     private final TagoProperties properties;
-    private final RestClient restClient = RestClient.create();
+    // 타임아웃을 안 걸어두면 TAGO 서버가 느려질 때(예: 짧은 시간 안에 요청을 몰아서 보냈을 때) 요청이
+    // 무한정 걸려서, 프론트가 30초 뒤 자체적으로 요청을 끊을 때까지 화면이 멈춰버린다. IBM STT/TTS
+    // 클라이언트와 같은 이유로 연결/응답 각각 상한을 둬서 실패라도 빨리 나게 한다.
+    private final RestClient restClient = RestClient.builder().requestFactory(timeoutRequestFactory()).build();
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    private static SimpleClientHttpRequestFactory timeoutRequestFactory() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(5_000);
+        factory.setReadTimeout(8_000);
+        return factory;
+    }
 
     // 전국 복수 세부 터미널 및 별칭 전체 매핑 테이블 (TAGO 고속버스 터미널 ID)
     private static final Map<String, String> TERMINAL_MAP = new LinkedHashMap<>();
@@ -31,51 +42,85 @@ public class TagoClient {
 
     static {
         // [서울권]
-        register("NAEK010", "서울", "서울경부", "강남", "고터", "강남고속", "서울고속");
-        register("NAEK020", "서울", "센트럴시티", "센트럴", "강남호남", "호남선");
-        register("NAEK030", "서울", "동서울", "강변");
-        register("NAEK040", "서울", "서울남부", "남부터미널");
+        register("NAEK010", "서울", "서울경부", "강남", "고터", "강남고속", "서울고속", "고속터미널");
+        register("NAEK021", "서울", "센트럴시티", "센트럴", "강남호남", "호남선");
+        register("NAEK032", "서울", "동서울", "강변");
 
         // [대구권]
         register("NAEK801", "대구", "동대구", "동대구복합", "동대구환승센터", "대구고속");
-        register("NAEK803", "대구", "서대구", "서대구고속", "만평");
-        register("NAEK805", "대구", "대구북부", "북부정류장");
-        register("NAEK807", "대구", "대구서부", "서부정류장");
+        register("NAEK805", "대구", "서대구", "서대구고속", "만평", "대구북부", "북부정류장");
+        register("NAEK807", "대구", "대구용계", "대구서부", "서부정류장");
 
         // [부산권]
-        register("NAEK700", "부산", "부산종합", "부산", "부산노포", "노포", "노포동", "부산고속");
+        register("NAEK700", "부산", "부산종합", "부산", "부산노포", "노포", "노포동", "부산고속", "해운대", "해운대터미널");
         register("NAEK703", "부산", "부산서부", "서부산", "사상", "사상터미널");
-        register("NAEK705", "부산", "해운대", "해운대터미널");
 
         // [대전권]
-        // 다른 도시(부산종합/광주종합/인천종합 등)는 모두 "종합"을 쓰는데 대전만 공식 명칭이
-        // "복합"이라, 실제로 사용자가 다른 도시처럼 "대전종합"이라고 부르는 경우가 있어 별칭으로 등록한다.
-        register("NAEK300", "대전", "대전복합", "동대전", "대전터미널", "대전종합");
-        register("NAEK310", "대전", "유성고속", "유성", "유성터미널", "충남대");
+        register("NAEK300", "대전", "대전복합", "동대전", "대전터미널");
         register("NAEK305", "대전", "대전청사", "정부청사", "둔산");
 
         // [광주권]
-        register("NAEK500", "광주", "광주종합", "유스퀘어", "광주고속", "광천동");
-        register("NAEK505", "광주", "광주송정", "송정");
+        register("NAEK500", "광주", "광주종합", "광주", "유스퀘어", "광주고속", "광천동");
 
         // [인천/경기권]
         register("NAEK100", "인천", "인천종합", "인천", "인천터미널", "관교동");
-        register("NAEK110", "수원", "수원종합", "수원", "수원터미널");
-        register("NAEK115", "수원", "서수원");
         register("NAEK120", "성남", "성남종합", "성남", "야탑", "분당");
 
         // [충청/전라/강원/경상권]
-        register("NAEK320", "청주", "청주고속", "청주", "가경동");
-        register("NAEK325", "청주", "북청주", "청주시외");
-        register("NAEK340", "천안", "천안고속", "천안", "천안터미널");
+        register("NAEK400", "청주", "청주고속", "청주", "가경동");
+        register("NAEK310", "천안", "천안고속", "천안", "천안터미널");
         register("NAEK602", "전주", "전주고속", "전주", "전주터미널");
         register("NAEK200", "강릉", "강릉고속", "강릉", "강릉터미널");
-        register("NAEK210", "원주", "원주고속", "원주", "원주터미널");
+        register("NAEK240", "원주", "원주고속", "원주", "원주터미널");
         register("NAEK230", "속초", "속초고속", "속초", "속초터미널");
-        register("NAEK820", "포항", "포항고속", "포항", "포항터미널");
+        register("NAEK830", "포항", "포항고속", "포항", "포항터미널");
         register("NAEK710", "창원", "창원고속", "창원");
-        register("NAEK715", "마산", "마산고속", "마산");
-        register("NAEK560", "완도", "완도", "완도터미널");
+        register("NAEK705", "마산", "마산고속", "마산");
+        register("NAEK715", "울산", "울산고속", "울산", "울산터미널");
+        register("NAEK250", "춘천", "춘천고속", "춘천", "춘천터미널");
+        register("NAEK352", "세종", "세종터미널", "세종", "세종청사");
+        register("NAEK722", "진주", "진주고속", "진주", "진주터미널");
+        register("NAEK510", "여수", "여수고속", "여수", "여수터미널");
+        register("NAEK515", "순천", "순천고속", "순천", "순천터미널");
+        register("NAEK505", "목포", "목포고속", "목포", "목포터미널");
+        register("NAEK815", "경주", "경주고속", "경주", "경주터미널");
+        register("NAEK840", "안동", "안동고속", "안동", "안동터미널");
+        register("NAEK735", "김해", "김해고속", "김해", "김해터미널");
+        register("NAEK810", "구미", "구미고속", "구미", "구미터미널");
+        register("NAEK730", "통영", "통영고속", "통영", "통영터미널");
+        register("NAEK180", "평택", "평택고속", "평택", "평택터미널");
+        register("NAEK340", "아산", "아산고속", "아산", "온양", "아산온양");
+        register("NAEK270", "양양", "양양고속", "양양", "양양터미널");
+        register("NAEK320", "공주", "공주고속", "공주", "공주터미널");
+        register("NAEK130", "안성", "안성고속", "안성", "안성터미널");
+        register("NAEK450", "제천", "제천고속", "제천", "제천터미널");
+        register("NAEK140", "여주", "여주고속", "여주", "여주터미널");
+        register("NAEK238", "횡성", "횡성고속", "횡성", "횡성터미널");
+        register("NAEK150", "용인", "용인고속", "용인", "용인터미널");
+        register("NAEK160", "이천", "이천고속", "이천", "이천터미널");
+        register("NAEK220", "삼척", "삼척고속", "삼척", "삼척터미널");
+        register("NAEK210", "동해", "동해고속", "동해", "동해터미널");
+        register("NAEK825", "상주", "상주고속", "상주", "상주터미널");
+        register("NAEK835", "영주", "영주고속", "영주", "영주터미널");
+        register("NAEK850", "문경", "점촌", "문경", "문경터미널", "점촌터미널");
+        register("NAEK330", "금산", "금산고속", "금산", "금산터미널");
+        register("NAEK394", "태안", "태안고속", "태안", "태안터미널");
+        register("NAEK851", "예천", "예천고속", "예천", "예천터미널");
+        register("NAEK520", "광양", "광양고속", "광양", "광양터미널");
+        register("NAEK146", "포천", "포천고속", "포천", "포천터미널");
+        register("NAEK148", "철원", "철원고속", "철원", "철원터미널");
+        register("NAEK272", "영월", "영월고속", "영월", "영월터미널");
+        register("NAEK372", "부여", "부여고속", "부여", "부여터미널");
+        register("NAEK274", "태백", "태백고속", "태백", "태백터미널");
+        register("NAEK222", "정선", "정선고속", "정선", "정선터미널");
+        register("NAEK845", "영천", "영천고속", "영천", "영천터미널");
+        register("NAEK843", "영덕", "영덕고속", "영덕", "영덕터미널");
+        register("NAEK389", "홍성", "홍성고속", "홍성", "홍성터미널");
+        register("NAEK853", "울진", "울진고속", "울진", "울진터미널");
+        register("NAEK858", "봉화", "봉화고속", "봉화", "봉화터미널");
+        register("NAEK393", "서산", "서산고속", "서산", "서산터미널");
+        register("NAEK312", "당진", "당진고속", "당진", "당진터미널");
+        register("NAEK370", "논산", "논산고속", "논산", "논산터미널");
     }
 
     private static void register(String id, String city, String canonicalName, String... aliases) {
@@ -184,7 +229,7 @@ public class TagoClient {
     }
 
     /**
-     * 등록된 모든 도시명 (정규식 생성용). 복수 터미널 도시(서울/대구/대전/광주 등)는 도시명 자체가
+     * 등록된 모든 도시명 (정규식 생성용). 복수 터미널 도시(서울/대구/대전 등)는 도시명 자체가
      * 어느 터미널의 별칭으로도 등록돼 있지 않아 allNamesAndAliases()에 안 잡힌다 — "서울 말고
      * 대구로"처럼 세부 터미널 없이 도시명만으로 정정하는 표현을 잡으려면 이 목록이 따로 필요하다.
      */
@@ -221,8 +266,11 @@ public class TagoClient {
                             result.add(toBusSchedule(node));
                         }
                     }
-                    if (!result.isEmpty()) return result;
                 }
+                // API 호출 자체는 성공했으므로, 결과가 비어 있어도(=이 두 터미널 사이에 직행 노선이
+                // 없다는 뜻) 그대로 반환한다. 여기서 Mock으로 대체하면 "노선이 없다"는 사실이 조용히
+                // 가짜 시간표로 둔갑해 버린다 — 우리는 직행 노선만 다루므로 없으면 없다고 해야 한다.
+                return result;
             } catch (Exception e) {
                 log.warn("TAGO 버스 API 호출 실패({}), Mock 시간표 반환", e.getMessage());
             }

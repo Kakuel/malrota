@@ -87,6 +87,15 @@ export function ConversationPanel() {
 
     try {
       const session: ConversationSessionResult = await parseConversation(sendText, sessionId)
+
+      if (session.routeNotFound) {
+        // 출발지-도착지 사이에 직행 노선 자체가 없는 경우 — 세션에 남겨두면 같은 노선을 계속
+        // 물어보게 되므로, 세션을 초기화해서 다음 발화부터 출발지/도착지를 새로 물어보게 한다.
+        appSay(session.clarificationPrompt ?? '해당 노선을 찾지 못했어요. 다시 어디에서 어디로 가시는지 말씀해 주세요.')
+        setSessionId(null)
+        return
+      }
+
       setSessionId(session.sessionId)
 
       // 서버가 더 물어볼 게 있으면 (clarificationPrompt) → 그걸 물어보기
@@ -109,7 +118,7 @@ export function ConversationPanel() {
           setSeatPreferences(session.seatPreferences ?? [])
           setAccessibilityNeeds(session.accessibilityNeeds ?? [])
           setPassengers(session.passengers ?? 1)
-          const recs = await recommendBuses({
+          const { recommendations: recs, routeExists } = await recommendBuses({
             departure: dep,
             arrival: arr,
             date: dt,
@@ -119,7 +128,15 @@ export function ConversationPanel() {
             busGradePreference: session.busGradePreference,
           })
           if (recs.length === 0) {
-            appSay('해당 조건의 버스를 찾지 못했습니다.')
+            if (!routeExists) {
+              // 조건이 안 맞는 게 아니라 이 두 도시 사이에 직행 노선 자체가 없는 경우 — 우리는
+              // 직행만 다루므로 그 사실을 정직하게 안내하고, 세션을 초기화해서 출발지/도착지부터
+              // 다시 물어보게 한다.
+              appSay(`${dep}에서 ${arr}까지 가는 직행 버스 노선을 찾지 못했어요. 다시 어디에서 어디로 가시는지 말씀해 주세요.`)
+              setSessionId(null)
+            } else {
+              appSay('해당 조건의 버스를 찾지 못했습니다.')
+            }
           } else {
             appSay(buildConditionSummary(session, dep, arr, dt, departureTime))
             setRecommendations(recs)
