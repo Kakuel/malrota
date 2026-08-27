@@ -164,4 +164,3 @@ export function ConversationPanel() {
 
   return <VoicePanel onUserSpeak={handleUserSpeak} loading={loading} />
 }
-
