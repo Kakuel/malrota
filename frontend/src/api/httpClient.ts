@@ -1,7 +1,7 @@
 const defaultApiBaseUrl = 'http://localhost:8081'
 
 const apiBaseUrl = (
-  process.env.REACT_APP_API_BASE_URL ?? defaultApiBaseUrl
+  process.env.REACT_APP_API_BASE_URL?.trim() || defaultApiBaseUrl
 ).replace(/\/+$/, '')
 
 export interface FieldViolation {

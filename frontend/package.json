@@ -2,6 +2,7 @@
   "name": "malrota-frontend",
   "private": true,
   "version": "0.1.0",
+  "homepage": "https://kakuel.github.io/malrota",
   "scripts": {
     "start": "react-scripts start",
     "dev": "react-scripts start",
