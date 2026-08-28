@@ -645,6 +645,69 @@ class ConversationParseServiceTest {
         assertThat(r.correctedText()).isEqualTo("창가 쪽으로 주세요");
     }
 
+    // "서울경부"를 "서울 경구"/"서울 경국"처럼 마지막 음절을 잘못 알아듣는 STT 오인식 상황을
+    // 흉내낸다. LLM 자신의 departure 필드는 일부러 비워둬서, 실제로 반영되는 값이 LLM의 raw
+    // 구조화 필드 추측이 아니라 correctedText 기반 룰베이스 재추출 결과임을 검증한다.
+    private static class TerminalCorrectingWatsonxClient extends WatsonxClient {
+        TerminalCorrectingWatsonxClient() { super(null); }
+        @Override public boolean isConfigured() { return true; }
+        @Override public String ask(String prompt) {
+            return """
+                {"intent":"BUS_SEARCH","departure":null,"arrival":null,"date":null,
+                 "departureTime":null,"timePreference":"ANY","servicePreference":"ANY",
+                 "busGradePreference":"ANY","passengers":1,"seatPreferences":[],"accessibilityNeeds":[],
+                 "correctedText":"서울경부에서 대전 가는 버스"}
+                """;
+        }
+    }
+
+    @Test
+    void still_recovers_a_mangled_terminal_name_via_llm_corrected_text_after_removing_raw_llm_guesses() {
+        // 출발/도착지에서 LLM의 raw 구조화 필드 추측을 제거했다고 해서, "서울 경구"/"서울 경국"처럼
+        // 끝 음절이 잘못 들린 터미널명을 correctedText로 통째 교정해 룰베이스가 다시 정확히
+        // 잡아내는 기존 STT 오인식 교정 경로까지 막히면 안 된다 — 이 둘은 서로 다른 메커니즘이다.
+        ConversationParseService serviceWithCorrection = new ConversationParseService(
+                new TerminalCorrectingWatsonxClient(), new ConversationRuleExtractor(), alwaysHasRouteService());
+
+        ConversationParseResponse r = serviceWithCorrection.parse(
+                new ConversationParseRequest("서울 경구에서 대전 가는 버스", "s1"), new ConversationSession("s1"));
+
+        assertThat(r.departure()).isEqualTo("서울경부");
+        assertThat(r.arrival()).isEqualTo("대전");
+        assertThat(r.correctedText()).isEqualTo("서울경부에서 대전 가는 버스");
+    }
+
+    // "부산"을 "두산"으로 잘못 알아듣는 STT 오인식(이전에 실제로 보고된 사고)을 correctedText로
+    // 교정하는 경우. "서울경부" 같은 구체적 터미널명뿐 아니라 "부산"처럼 세부 터미널이 여럿인
+    // 도시명 자체도 같은 방식(룰베이스 재추출)으로 교정되는지 확인한다.
+    private static class CityNameCorrectingWatsonxClient extends WatsonxClient {
+        CityNameCorrectingWatsonxClient() { super(null); }
+        @Override public boolean isConfigured() { return true; }
+        @Override public String ask(String prompt) {
+            return """
+                {"intent":"BUS_SEARCH","departure":null,"arrival":null,"date":null,
+                 "departureTime":null,"timePreference":"ANY","servicePreference":"ANY",
+                 "busGradePreference":"ANY","passengers":1,"seatPreferences":[],"accessibilityNeeds":[],
+                 "correctedText":"부산에서 대전 가는 버스"}
+                """;
+        }
+    }
+
+    @Test
+    void also_recovers_a_mangled_city_name_not_just_a_specific_terminal_via_llm_corrected_text() {
+        // 구체적 터미널명("서울경부")뿐 아니라 세부 터미널이 여럿인 도시명 자체("부산")도
+        // correctedText -> 룰베이스 재추출 경로로 똑같이 교정되는지 확인한다.
+        ConversationParseService serviceWithCorrection = new ConversationParseService(
+                new CityNameCorrectingWatsonxClient(), new ConversationRuleExtractor(), alwaysHasRouteService());
+
+        ConversationParseResponse r = serviceWithCorrection.parse(
+                new ConversationParseRequest("두산에서 대전 가는 버스", "s1"), new ConversationSession("s1"));
+
+        assertThat(r.departure()).isEqualTo("부산");
+        assertThat(r.arrival()).isEqualTo("대전");
+        assertThat(r.correctedText()).isEqualTo("부산에서 대전 가는 버스");
+    }
+
     @Test
     void leaves_corrected_text_null_when_the_llm_does_not_change_anything() {
         // 교정이 없었다면(원문 그대로) 프론트가 말풍선을 괜히 다시 그리지 않도록 null이어야 한다.
@@ -847,8 +910,10 @@ class ConversationParseServiceTest {
     }
 
     // 실제로 보고된 사고 재현: STT가 "부산"을 "두산"으로 잘못 알아들었는데, 원문 자체가 어떤 지명
-    // 패턴에도 걸리지 않아 룰베이스는 아무 값도 못 뽑았다. 이때 LLM이 최후 수단으로 "두산"을 그대로
-    // arrival에 채워 넣으면, 화이트리스트 재검증 없이는 노선 확인 단계까지 넘어가 버린다.
+    // 패턴에도 걸리지 않아 룰베이스는 아무 값도 못 뽑았다. 이때 LLM이 최후 수단으로 지명을 지어내
+    // 채워 넣으면(설령 "서울"처럼 실존하는 지명이어도, 사용자가 그 슬롯을 언급한 적이 없다면), 그
+    // 값을 확정된 조건으로 취급하면 안 된다 — 출발/도착지는 룰베이스/세션에 없으면 LLM에 기대지
+    // 않고 정직하게 되묻는다.
     private static class RegionGuessingWatsonxClient extends WatsonxClient {
         RegionGuessingWatsonxClient() { super(null); }
         @Override public boolean isConfigured() { return true; }
@@ -862,21 +927,50 @@ class ConversationParseServiceTest {
     }
 
     @Test
-    void rejects_an_llm_guessed_arrival_that_is_not_a_known_region_instead_of_treating_it_as_confirmed() {
+    void ignores_llm_guessed_departure_and_arrival_entirely_when_the_user_mentioned_neither() {
         ConversationParseService serviceWithGuess = new ConversationParseService(
                 new RegionGuessingWatsonxClient(), new ConversationRuleExtractor(), alwaysHasRouteService());
 
         ConversationParseResponse r = serviceWithGuess.parse(
                 new ConversationParseRequest("그냥 아무데나 예약해주세요", "s1"), new ConversationSession("s1"));
 
-        // LLM이 지어낸 미등록 지명("두산")은 확정된 도착지로 취급되면 안 된다.
+        // LLM의 추측은 미등록 지명("두산")이든 실존하는 지명("서울")이든 둘 다 무시되고, 정직하게
+        // 다시 물어봐야 한다 — 사용자가 이 발화에서 둘 중 아무것도 언급하지 않았기 때문이다.
         assertThat(r.arrival()).isNull();
-        // "노선을 찾지 못했다"(routeNotFound)가 아니라 "미지원 지역" 안내가 나가야 한다 —
-        // 실제로는 존재하지도 않는 지명이라 노선 여부를 판단할 수 있는 대상 자체가 아니기 때문이다.
+        assertThat(r.departure()).isNull();
         assertThat(r.routeNotFound()).isFalse();
-        assertThat(r.clarificationPrompt()).contains("두산").contains("지원하지 않는");
-        // 화이트리스트에 있는 LLM의 다른 추측("서울")은 그대로 신뢰돼야 한다.
-        assertThat(r.departure()).isEqualTo("서울");
+        assertThat(r.missingFields()).contains("departure").contains("arrival");
+    }
+
+    // 실제로 보고된 사고 재현: 사용자가 "서울로 가고 싶어"라고 도착지만 말했는데("싶어"는 어미일
+    // 뿐 지명이 아님), LLM이 "싶어"를 지명으로 착각해 출발지를 "싫어"로 추측해 돌려줬다. 룰베이스는
+    // "서울"을 정확히 도착지로 잡아내지만, LLM의 근거 없는 출발지 추측은 신뢰하면 안 된다.
+    private static class PhantomDepartureWatsonxClient extends WatsonxClient {
+        PhantomDepartureWatsonxClient() { super(null); }
+        @Override public boolean isConfigured() { return true; }
+        @Override public String ask(String prompt) {
+            return """
+                {"intent":"BUS_SEARCH","departure":"싫어","arrival":"싫어","date":null,
+                 "departureTime":null,"timePreference":"ANY","servicePreference":"ANY",
+                 "busGradePreference":"ANY","passengers":1,"seatPreferences":[],"accessibilityNeeds":[]}
+                """;
+        }
+    }
+
+    @Test
+    void does_not_let_the_llm_invent_a_departure_from_a_verb_ending_mistaken_for_a_place_name() {
+        ConversationParseService serviceWithPhantomGuess = new ConversationParseService(
+                new PhantomDepartureWatsonxClient(), new ConversationRuleExtractor(), alwaysHasRouteService());
+
+        ConversationParseResponse r = serviceWithPhantomGuess.parse(
+                new ConversationParseRequest("서울로 가고 싶어", "s1"), new ConversationSession("s1"));
+
+        // 룰베이스가 정확히 잡아낸 도착지("서울")는 그대로 유지되고, LLM이 지어낸 "싫어"는
+        // 출발지로도 반영되지 않아야 한다.
+        assertThat(r.arrival()).isEqualTo("서울");
+        assertThat(r.departure()).isNull();
+        assertThat(r.missingFields()).contains("departure");
+        assertThat(r.clarificationPrompt()).doesNotContain("싫어");
     }
 
     // LLM이 accessibilityNeeds에 프롬프트가 정의하지 않은 값을 지어내는 상황을 흉내낸다.
